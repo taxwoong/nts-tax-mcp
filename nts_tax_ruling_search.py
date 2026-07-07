@@ -68,6 +68,24 @@ SORT_OPTIONS = {
     "date_asc": "DCM_RGT_DTM/ASC",
 }
 
+# 세목 코드표 (검색화면 select[name=tlawClCd] 실측)
+TAX_TYPE_CODES = {
+    "국세기본": "301",
+    "국세징수": "302",
+    "법인세": "303",
+    "종합소득세": "305",
+    "부가가치세": "306",
+    "양도소득세": "307",
+    "상속증여세": "308",
+    "조세특례": "309",
+    "국제조세": "310",
+    "종합부동산세": "311",
+    "원천세": "312",
+    "소비세": "313",
+    "주세": "314",
+    "교육세": "315",
+}
+
 DEFAULT_CACHE_TTL = 300
 DEFAULT_MIN_INTERVAL = 0.5
 
@@ -210,6 +228,15 @@ class NtsTaxLawClient:
                 logger.info("캐시된 결과 반환: %s", keyword)
                 return cached[1]
 
+        # 세목 필터: 코드표에 정확히 일치하는 세목명이면 서버측 필터(정확), 아니면 클라이언트단 후처리
+        server_tax_codes = []
+        client_tax_filter = None
+        if tax_type_filter:
+            if tax_type_filter in TAX_TYPE_CODES:
+                server_tax_codes = [TAX_TYPE_CODES[tax_type_filter]]
+            else:
+                client_tax_filter = tax_type_filter
+
         param_data = {
             "schVcb": keyword,
             "startCount": start_count,
@@ -217,7 +244,7 @@ class NtsTaxLawClient:
             "wnKey": "",
             "searchType": "",
             "sortField": SORT_OPTIONS[sort],
-            "ntstTlawClCdList": [],
+            "ntstTlawClCdList": server_tax_codes,
             "icldVcbCtl": [],
             "exclVcbCtl": [],
             "rltnStttCtl": [],
@@ -236,8 +263,8 @@ class NtsTaxLawClient:
         raw = self._post_search(param_data)
         result = self._parse(raw, include_full_text=include_full_text)
 
-        if tax_type_filter:
-            result = self._apply_tax_type_filter(result, tax_type_filter)
+        if client_tax_filter:
+            result = self._apply_tax_type_filter(result, client_tax_filter)
 
         if date_from or date_to:
             result = self._apply_date_filter(result, date_from, date_to)
