@@ -172,7 +172,13 @@ class NtsTaxLawClient:
             collections: COLLECTIONS 값 리스트 중 원하는 것만 선택 (기본값: 전체)
             page: 페이지 번호 (1부터 시작)
             view_count: 컬렉션별로 가져올 결과 개수
-            date_from / date_to: 검색 기간 (YYYYMMDD)
+            date_from / date_to: 검색 기간 (YYYYMMDD).
+                주의: taxlaw.nts.go.kr 통합검색 화면에는 기간 필터 UI 자체가 없어,
+                서버 API에 기간 조건을 직접 전달하는 공식 파라미터를 확인하지 못했습니다.
+                따라서 이 값은 서버에 전달되지 않고, 검색 결과를 받아온 뒤
+                각 항목의 date(YYYYMMDD) 필드를 기준으로 클라이언트단에서 걸러냅니다.
+                (참고: 이 방식은 결과 목록은 정확히 필터링하지만, total_count는
+                전체 건수를 그대로 보여줍니다 — 필터링 전 서버 응답 기준입니다.)
             sort: "relevance"(정확도순, 기본) | "date_desc"(최신순) | "date_asc"(오래된순)
             tax_type_filter: 결과의 세목명(tax_type)에 이 문자열이 포함된 것만 남김
             include_full_text: False면 본문 전문(content, detail_content)을 생략하고 요약만 반환
@@ -185,6 +191,11 @@ class NtsTaxLawClient:
             raise ValueError(f"sort는 {list(SORT_OPTIONS.keys())} 중 하나여야 합니다")
 
         start_count = (page - 1) * view_count + 1
+
+        # 날짜 필터가 있으면 필터링 후 개수가 너무 적어지지 않도록 내부적으로 더 많이 가져옵니다.
+        fetch_view_count = view_count
+        if date_from or date_to:
+            fetch_view_count = min(max(view_count * 5, 50), 200)
 
         cache_key = None
         if use_cache:
@@ -211,23 +222,30 @@ class NtsTaxLawClient:
             "exclVcbCtl": [],
             "rltnStttCtl": [],
             "schDtBase": date_base,
-            "viewCount": str(view_count),
+            "viewCount": str(fetch_view_count),
             "prtsSprcChiefJdgmYn": "",
             "prtsAttrYrCtl": [],
             "prtsPrgrStatCtl": [],
             "mainIdCtl": [],
             "useSynonymYn": "N",
         }
-        if date_from:
-            param_data["bltnStrtDtm"] = date_from
-        if date_to:
-            param_data["bltnEndDtm"] = date_to
+        # 주의: bltnStrtDtm/bltnEndDtm 등 기간 관련 서버 파라미터는 실제 UI에 대응하는
+        # 필드를 확인하지 못해 의도적으로 제외했습니다 (잘못된 값 전송시 검색 자체가
+        # 0건으로 깨지는 문제가 있었습니다). 기간 필터는 아래에서 클라이언트단으로 처리합니다.
 
         raw = self._post_search(param_data)
         result = self._parse(raw, include_full_text=include_full_text)
 
         if tax_type_filter:
             result = self._apply_tax_type_filter(result, tax_type_filter)
+
+        if date_from or date_to:
+            result = self._apply_date_filter(result, date_from, date_to)
+            # 내부적으로 더 가져온 결과를 다시 요청한 view_count 만큼으로 잘라냅니다.
+            for coll_name, coll_data in result.items():
+                if coll_name == "_guidance" or not isinstance(coll_data, dict):
+                    continue
+                coll_data["items"] = coll_data.get("items", [])[:view_count]
 
         result = self._attach_guidance(result, keyword)
 
@@ -318,6 +336,32 @@ class NtsTaxLawClient:
             item["content"] = strip_hl(it.get("CNTN"))
             item["detail_content"] = strip_hl(it.get("FILE_CN"))
         return item
+
+    @staticmethod
+    def _apply_date_filter(result: dict, date_from: Optional[str], date_to: Optional[str]) -> dict:
+        """클라이언트단 날짜 필터. item['date']는 'YYYYMMDD...' 형식 문자열입니다."""
+        def in_range(date_str: Optional[str]) -> bool:
+            if not date_str:
+                return False
+            d = date_str[:8]  # YYYYMMDD 부분만
+            if date_from and d < date_from:
+                return False
+            if date_to and d > date_to:
+                return False
+            return True
+
+        filtered = {}
+        for coll_name, coll_data in result.items():
+            if coll_name == "_guidance":
+                filtered[coll_name] = coll_data
+                continue
+            items = [it for it in coll_data.get("items", []) if in_range(it.get("date"))]
+            filtered[coll_name] = {
+                **coll_data,
+                "items": items,
+                "filtered_by_date": {"from": date_from, "to": date_to},
+            }
+        return filtered
 
     @staticmethod
     def _apply_tax_type_filter(result: dict, tax_type_filter: str) -> dict:

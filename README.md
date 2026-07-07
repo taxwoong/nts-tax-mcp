@@ -17,6 +17,29 @@ nts-tax-mcp/
 └── .gitignore
 ```
 
+## v2.1 버그 수정 (중요)
+
+`client/` 폴더 작업 중 발견된 문제를 수정했습니다.
+
+- **날짜 필터(`date_from`/`date_to`)가 검색 자체를 깨뜨리던 문제** — taxlaw.nts.go.kr
+  통합검색 화면에는 애초에 기간 필터 UI가 없어서, 이전 버전에서 추측으로 넣었던
+  `bltnStrtDtm`/`bltnEndDtm` 서버 파라미터가 잘못된 값으로 취급되어 **검색 결과가
+  통째로 0건으로 나오는 문제**가 있었습니다. 이번에 해당 파라미터를 제거하고,
+  결과를 받아온 뒤 `date` 필드로 걸러내는 **클라이언트단 필터**로 교체했습니다.
+- 문서번호(`doc_no`) 필드에 검색어 하이라이트 마커(`<!HS>`, `<!HE>`)가 안 지워져
+  `nts_ruling_get_by_doc_no`의 정확 매칭이 실패하던 문제도 함께 수정했습니다.
+
+## MCP 커넥터 우회 독립 클라이언트 (`client/`)
+
+Claude 커넥터 연결이 불안정할 때, MCP를 거치지 않고 서버에 직접 접속해서 검색할 수
+있는 독립 클라이언트를 `client/` 폴더에 추가했습니다. 사용법은 `client/README.md` 참고.
+
+```bash
+cd client
+python nts_search.py --ping
+python nts_search.py "조정대상지역" -c precedent -n 10
+```
+
 ## v2 개선사항
 
 최초 버전 이후 아래 항목들을 개선했습니다.
@@ -82,6 +105,30 @@ PORT=8765 python server.py
 - "부당행위계산 부인 관련 최근 조세심판원 결정례 있는지 확인해줘. 2024년 이후만."
 - "조심-2023-서-9465 판례 원문 보여줘" (사건번호 직접 조회)
 - "양도소득세만 걸러서 다시 보여줘" (세목 필터)
+
+## 5. 서버 상태 독립 점검 (Claude 없이 확인하기)
+
+Claude 채팅에서 도구가 안 잡히는 문제가 생겼을 때, **서버 자체 문제인지 Claude 쪽 문제인지**를
+빠르게 구분하기 위한 스크립트입니다. Claude를 거치지 않고 서버에 직접 MCP 프로토콜로 요청을
+보내서 initialize → tools/list → tools/call까지 전체 흐름을 검증합니다.
+
+```bash
+python test_mcp_client.py
+```
+
+기본적으로 배포된 Railway 서버(`https://web-production-10fe2.up.railway.app/mcp`)를 검사합니다.
+다른 주소나 로컬 서버를 검사하려면:
+
+```bash
+python test_mcp_client.py --url http://127.0.0.1:8000/mcp
+```
+
+**이 스크립트가 전부 성공하는데 Claude 채팅에서는 도구가 안 보인다면**, 원인은 서버가 아니라
+Claude 쪽 커넥터 인식/캐싱 문제입니다. 이 경우 아래를 시도해 보세요.
+
+- 완전히 새 대화창에서 다시 확인 (커넥터를 새로 켠 직후엔 기존 대화창에 반영 안 될 수 있음)
+- 설정 → 커넥터에서 해당 커넥터를 삭제 후 재등록
+- 그래도 안 되면 `support.claude.com`에 문의 (Claude 플랫폼 쪽 반영 지연/버그일 가능성)
 
 ## 도구 파라미터 참고
 
