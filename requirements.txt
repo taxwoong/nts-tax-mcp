@@ -1,3 +1,4 @@
-mcp[cli]>=1.2.0
+# mcp 2.0.0에서 mcp.server.fastmcp가 제거되어 서버가 죽는다 — 반드시 2.0 미만으로 고정 (2026-08-08 확인)
+mcp[cli]>=1.2.0,<2.0.0
 requests>=2.31.0
 beautifulsoup4>=4.12.0
