@@ -183,9 +183,14 @@ class LawGoKrClient:
             blk_branch = bm.group(1) if bm else None
             if branch_no != blk_branch:
                 continue
-            title = re.search(r"<조문제목>(.*?)</조문제목>", block, re.S)
             body = _strip_tags(_strip_cdata(block))
             label = f"제{base_no}조" + (f"의{branch_no}" if branch_no else "")
+            # 절/관/장이 이 조문에서 시작되면 그 표제가 동일 <조문번호>를 단 채
+            # 실제 조문보다 먼저 나온다(예: 제104조 앞의 "제6절 …" 노드) — 표제 블록은
+            # 조번호 문자열 자체를 포함하지 않으므로 걸러내고 다음 후보를 찾는다.
+            if label not in body:
+                continue
+            title = re.search(r"<조문제목>(.*?)</조문제목>", block, re.S)
             return {
                 "조문": label,
                 "조문제목": _strip_cdata(title.group(1)) if title else "",
