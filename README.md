@@ -33,8 +33,9 @@ Railway 크레딧 소진으로 서버가 죽어(2026-08-08) 자체 서버컴퓨�
 - **전제조건**: law.go.kr Open API는 **등록된 IP에서만** 동작합니다.
   [open.law.go.kr](https://open.law.go.kr) → OpenAPI 신청내역에서 서버의 공인 IP를
   사전 등록해야 합니다. 미등록 상태면 법제처 8개 도구만 "인증 실패"가 뜨고 기존
-  국세/지방세 6개 도구는 정상 동작합니다. 환경변수 `LAW_API_OC`(기관코드, 기본값
-  `taxwoong`)로 인증 계정을 지정합니다.
+  국세/지방세 6개 도구는 정상 동작합니다. 환경변수 `LAW_API_OC`(law.go.kr 가입 시
+  발급받는 기관코드, 필수)로 인증 계정을 지정합니다. 개인 식별정보라 이 저장소에는
+  실제 값을 커밋하지 않고, 서버컴퓨터에만 두는 `.gitignore`된 로컬 파일에서 불러옵니다.
 - **현재 운영 방식**: 서버컴퓨터에서 `run_server.bat`(포트 `8734`, `server_ext.py` 실행)를
   Windows 작업 스케줄러(`nts-tax-mcp`, 부팅 시 SYSTEM 권한 자동 실행)로 상시 구동하고,
   `tailscale funnel --bg 8734`로 고정 주소 **`https://desktop-ika1349.tail81ecba.ts.net/mcp`**
@@ -68,7 +69,8 @@ nts-tax-mcp/
 ├── requirements.txt
 ├── Procfile                     # Railway 배포용 (레거시 — 현재 운영은 서버컴퓨터+Tailscale Funnel)
 ├── setup.ps1                    # 서버컴퓨터 최초 설치 스크립트 (소스 다운로드→의존성→작업 스케줄러 등록)
-└── run_server.bat               # 확장판(server_ext.py) 상시 구동용 — 작업 스케줄러가 부팅 시 실행
+├── run_server.bat               # 확장판(server_ext.py) 상시 구동용 — 작업 스케줄러가 부팅 시 실행
+└── local_env.bat                # (커밋 안 됨) LAW_API_OC 등 개인 식별정보 — .gitignore 처리, 서버컴퓨터에서 직접 생성
 ```
 
 ## 제공 도구
@@ -175,7 +177,7 @@ PORT=8765 python server.py
 | `NTS_CACHE_TTL` | 300 | 동일 검색 결과 캐시 유지 시간(초) |
 | `NTS_MIN_REQUEST_INTERVAL` | 0.5 | 국세청 서버로 보내는 요청 사이 최소 간격(초) |
 | `LOG_LEVEL` | INFO | 로깅 레벨 (DEBUG로 두면 세션 재접속/캐시 히트 등이 상세히 찍힘) |
-| `LAW_API_OC` | taxwoong | `server_ext.py` 전용. law.go.kr Open API 인증 기관코드. 이 코드로 등록된 IP에서만 법제처 8개 도구가 동작 (`open.law.go.kr` → OpenAPI 신청내역에서 서버 공인 IP 사전 등록 필요) |
+| `LAW_API_OC` | 없음 (필수) | `server_ext.py` 전용. law.go.kr 가입 시 발급받는 기관코드 — 미설정시 법제처 8개 도구가 명시적 오류를 반환. 이 코드로 등록된 IP에서만 동작 (`open.law.go.kr` → OpenAPI 신청내역에서 서버 공인 IP 사전 등록 필요). 개인 식별정보이므로 소스에 직접 적지 말고 배포 환경에서 주입할 것 |
 
 ## 2. 배포
 
@@ -191,8 +193,10 @@ Railway 크레딧 소진으로 서버가 다운된 뒤(2026-08-08), 자체 서�
    Set-ExecutionPolicy -Scope Process Bypass -Force
    .\setup.ps1
    ```
-2. `run_server.bat`이 `PORT=8734`, `LAW_API_OC=taxwoong`을 설정하고 `server_ext.py`를
-   실행합니다 (로그: `server.log`).
+2. `run_server.bat`이 `PORT=8734`를 설정하고 `server_ext.py`를 실행합니다 (로그:
+   `server.log`). `LAW_API_OC`는 이 파일에 직접 적지 않고, `.gitignore`된 로컬 파일
+   (`local_env.bat` — `set LAW_API_OC=본인_기관코드` 한 줄)에서 불러옵니다. 이 파일이
+   없으면 법제처 8개 도구만 동작하지 않고 기본 6개는 정상입니다.
 3. [Tailscale](https://tailscale.com)을 설치해 로그인 후 Funnel로 외부에 고정 주소로 노출합니다.
    ```powershell
    tailscale funnel --bg 8734

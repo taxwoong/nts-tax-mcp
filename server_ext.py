@@ -4,7 +4,7 @@ server_ext.py — nts-tax-mcp 확장 진입점
 기존 server.py의 도구 6개(국세 NTS + 지방세 olta)를 그대로 물려받고,
 법제처 law.go.kr Open API 도구 5개를 추가한다. 커넥터 하나로 통합 운영.
 
-실행: PORT=8734 LAW_API_OC=taxwoong python server_ext.py
+실행: PORT=8734 LAW_API_OC=<발급받은 기관코드> python server_ext.py
 (run_server.bat이 이 파일을 실행한다. server.py는 수정하지 않는다.)
 """
 import logging

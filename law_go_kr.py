@@ -3,7 +3,7 @@
 law_go_kr.py — 국가법령정보센터 Open API(DRF) 클라이언트
 nts-tax-mcp 확장 모듈: 대법원 판례 · 법령(현행+연혁) · 법령해석례
 
-- 인증: 환경변수 LAW_API_OC (기본 taxwoong). law.go.kr에 등록된 IP에서만 동작.
+- 인증: 환경변수 LAW_API_OC(law.go.kr 가입 시 발급받는 기관코드) 필수. 등록된 IP에서만 동작.
 - 응답: XML을 경량 파싱 (JSON 지원이 target마다 들쭉날쭉해 XML로 통일).
 - 연혁 워크플로우(2026-07-21 확립): lawSearch target=eflaw로 시행본 목록
   → 특정 시행본 원문은 lawService target=law&MST=… → 조문은 <조문번호> 위치 기준 순차 슬라이스.
@@ -14,7 +14,7 @@ import html
 import requests
 
 BASE = "http://www.law.go.kr/DRF"
-OC = os.environ.get("LAW_API_OC", "taxwoong")
+OC = os.environ.get("LAW_API_OC", "")
 TIMEOUT = 20
 
 _TAG_RE = re.compile(r"<([^/>\s]+)>\s*(.*?)\s*</\1>", re.S)
@@ -34,6 +34,8 @@ def _strip_tags(s: str) -> str:
 
 
 def _get(endpoint: str, **params) -> str:
+    if not OC:
+        raise LawGoKrError("LAW_API_OC 환경변수가 설정되지 않았습니다 — law.go.kr에서 발급받은 기관코드(OC)를 설정하세요.")
     p = {"OC": OC, "type": "XML"}
     p.update({k: v for k, v in params.items() if v not in (None, "", 0)})
     r = requests.get(f"{BASE}/{endpoint}", params=p, timeout=TIMEOUT,

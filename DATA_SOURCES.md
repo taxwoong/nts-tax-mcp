@@ -139,7 +139,7 @@ law.go.kr(법제처)은 2026-08 서버컴퓨터 이전 시 `server_ext.py`로 �
 ### 호출 방식
 - 베이스: `http://www.law.go.kr/DRF`
 - 검색: `GET lawSearch.do` / 본문: `GET lawService.do`
-- 요청: `OC`(기관코드, 환경변수 `LAW_API_OC`, 기본 `taxwoong`) + `type=XML` + `target`(대상 구분) 등
+- 요청: `OC`(기관코드, 환경변수 `LAW_API_OC` — law.go.kr 가입 시 발급, 필수) + `type=XML` + `target`(대상 구분) 등
 - 응답: **XML** (JSON 지원이 target마다 들쭉날쭉해 XML로 통일 후 정규식으로 경량 파싱)
 - 인증: **IP 화이트리스트**. `open.law.go.kr` → OpenAPI 신청내역에 서버 공인 IP를
   사전 등록해야 하며, 미등록 IP는 응답 앞부분에 "인증"+"실패" 문자열이 포함되어
