@@ -191,11 +191,15 @@ class LawGoKrClient:
             if label not in body:
                 continue
             title = re.search(r"<조문제목>(.*?)</조문제목>", block, re.S)
-            return {
+            out = {
                 "조문": label,
                 "조문제목": _strip_cdata(title.group(1)) if title else "",
                 "원문": body[:max_chars],
             }
+            if len(body) > max_chars:
+                out["잘림"] = (f"전체 {len(body)}자 중 앞 {max_chars}자만 표시됨 — "
+                             f"max_chars를 {len(body)} 이상으로 지정해 다시 조회하면 전문을 볼 수 있음")
+            return out
         raise LawGoKrError(f"MST {mst}에서 제{article_no}조를 찾지 못함")
 
     # ---------- 행정규칙 (훈령·예규·고시·기본통칙) ----------
@@ -286,7 +290,8 @@ class LawGoKrClient:
         }
 
     # ---------- 편의: 특정 날짜 시행본의 조문 (예규 당시 조문 확인용) ----------
-    def law_article_as_of(self, law_name: str, as_of_date: str, article_no: str, law_id: str = ""):
+    def law_article_as_of(self, law_name: str, as_of_date: str, article_no: str, law_id: str = "",
+                          max_chars: int = 6000):
         """as_of_date(YYYYMMDD) 당시 시행 중이던 시행본을 골라 해당 조문 원문 반환.
         예규·판례가 인용한 '당시 조문' 검증용 — 회신일을 넣으면 그 시점 법을 준다."""
         history = self.law_history(law_name, law_id=law_id)
@@ -298,6 +303,6 @@ class LawGoKrClient:
                 chosen = row
         if not chosen:
             raise LawGoKrError(f"{as_of_date} 이전 시행본 없음 (최초 시행 {history[0]['시행일자']})")
-        art = self.law_article(chosen["MST"], article_no)
+        art = self.law_article(chosen["MST"], article_no, max_chars)
         art["적용시행본"] = {k: chosen[k] for k in ("법령명", "시행일자", "공포일자", "공포번호", "제개정구분", "MST")}
         return art
