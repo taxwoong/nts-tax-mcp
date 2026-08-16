@@ -1,7 +1,8 @@
 # 데이터 소스 사양서 — 호출 가능 목록 정리
 
-`nts-tax-mcp` 서버가 다루는 두 데이터 소스의 실제 호출 가능 범위, 컬렉션/카테고리 목록,
-반환 필드, 코드표를 실측 기반으로 정리한 문서입니다. (2026-07 조사 기준)
+`nts-tax-mcp` 서버가 다루는 세 데이터 소스의 실제 호출 가능 범위, 컬렉션/카테고리 목록,
+반환 필드, 코드표를 실측 기반으로 정리한 문서입니다. NTS/OLTA는 2026-07 조사 기준,
+law.go.kr(법제처)은 2026-08 서버컴퓨터 이전 시 `server_ext.py`로 통합된 내용 기준입니다.
 
 ---
 
@@ -133,41 +134,124 @@
 
 ---
 
-## 3. 두 시스템 관계 정리
+## 3. 국가법령정보센터 law.go.kr Open API (`server_ext.py`에서만 노출)
 
-| 항목 | NTS (국세) | OLTA (지방세) |
+### 호출 방식
+- 베이스: `http://www.law.go.kr/DRF`
+- 검색: `GET lawSearch.do` / 본문: `GET lawService.do`
+- 요청: `OC`(기관코드, 환경변수 `LAW_API_OC`, 기본 `taxwoong`) + `type=XML` + `target`(대상 구분) 등
+- 응답: **XML** (JSON 지원이 target마다 들쭉날쭉해 XML로 통일 후 정규식으로 경량 파싱)
+- 인증: **IP 화이트리스트**. `open.law.go.kr` → OpenAPI 신청내역에 서버 공인 IP를
+  사전 등록해야 하며, 미등록 IP는 응답 앞부분에 "인증"+"실패" 문자열이 포함되어
+  클라이언트가 이를 감지해 명시적 오류로 변환한다 (`LawGoKrError`).
+
+### `target`별 MCP 도구 매핑 (7개)
+
+| `target` | 내용 | 대응 MCP 도구 |
 |---|---|---|
-| 조세심판원 결정례 | 국세 사건만 (조심-YYYY-지역-NNNN) | 지방세 사건만 (조심YYYY지NNNN) |
-| 감사원 | 없음 | 있음 (감심YYYY-NNN) |
-| 헌법재판소 | 없음 | 있음 |
-| 법원판례 | 있음 (국세 사건) | 있음 (지방세 사건) |
-| 사전답변/질의회신 | 있음 (국세청·기재부) | 행안부 유권해석으로 대응 |
-| 법제처 해석 | question 컬렉션에 일부 포함 | 별도 카테고리 |
+| `prec` | 판례 (대법원·하급심) | `court_case_search`, `court_case_detail` |
+| `expc` | 법령해석례 | `law_interpretation_search` |
+| `law` | 현행 법령 검색 / 특정 시행본(MST) 원문 | `law_history_search`(current_only), `law_article_as_of` 내부 |
+| `eflaw` | 법령 연혁(전체 시행본 목록) | `law_history_search`, `law_article_as_of` 내부 |
+| `admrul` | 행정규칙 (훈령·예규·고시·기본통칙) | `admin_rule_search` |
+| `trty` | 조약 (조세조약 포함) | `treaty_search` |
+| `ordin` | 자치법규 (조례·규칙) | `ordinance_search` |
 
-→ **조세심판원 사건번호 체계가 완전히 달라 실제 중복은 발생하지 않음** (실측 확인).
-`nts_and_olta_precedent_search`의 중복 제거는 만일을 위한 안전장치.
+### 항목별 주요 반환 필드
+
+| 대상 | 목록 조회 필드 | 본문 조회 필드 |
+|---|---|---|
+| 판례(`prec`) | 판례일련번호, 사건명, 사건번호, 법원명, 선고일자, 판결유형, 사건종류명 | 판시사항, 판결요지, 참조조문, 참조판례, 판례내용 |
+| 법령해석례(`expc`) | 해석례일련번호, 안건명, 안건번호, 회신기관, 회신일자 | 질의요지, 회답, 이유 |
+| 법령(`law`/`eflaw`) | 법령명, 법령ID, MST(법령일련번호), 시행일자, 공포일자, 공포번호, 제개정구분 | 조문 원문(조번호 기준 슬라이스), 조문제목 |
+| 행정규칙(`admrul`) | 일련번호, 행정규칙명, 종류, 소관부처, 발령일자, 발령번호, 시행일자 | 본문 전체(길이 포함) |
+| 조약(`trty`) | 조약일련번호, 조약명, 조약구분, 서명일자, 발효일자 | 본문 전체(길이 포함) |
+| 자치법규(`ordin`) | 일련번호, 자치법규명, 지자체, 공포일자, 시행일자, 제개정구분 | 본문 전체(길이 포함) |
+
+### 도구별 구현 특이사항 (실측)
+- **`court_case_search`**: `search=2`(본문 포함 검색), `curt`(법원 필터), `prncYd`(선고일자
+  범위, 미지정시 `19450815~20991231`)로 동작.
+- **`law_article_as_of`**: `eflaw`로 연혁 시행본 목록을 받아 `as_of_date` 이하 최대
+  시행일자 본을 고른 뒤, 그 MST로 `law` 원문을 받아 `<조문번호>` 태그 **위치 기준
+  순차 슬라이스**로 조문을 잘라낸다 (단순 `<조문>…</조문>` 정규식은 실패함을 확인,
+  2026-07-21). 가지조문(`104의3` 형식)도 `<조문가지번호>`로 매칭. `law_id`를 안 주면
+  같은 이름의 본법/시행령/시행규칙이 섞여 의도치 않은 시행본이 선택될 수 있음.
+- **`law_history_search`**: `eflaw`를 페이지당 100건씩 최대 5페이지(최대 500건)까지
+  수집. 그 이상 시행본이 있는 법령은 일부 누락 가능(극히 드문 케이스).
+- **`ordinance_search`**의 `region` 필터는 **서버측이 아닌 클라이언트단 후처리**
+  (반환된 지자체기관명에 문자열 포함 여부로 필터링).
+- **`treaty_search`**: API 응답의 아이템 태그가 `Trty`/`trty`로 대소문자가 섞여 오는
+  경우가 있어 두 태그를 모두 파싱해 합친다.
+
+### 이 시스템에 **없는** 것 / 제한
+- 국세청/기재부의 사전답변·서면질의·질의회신 (이건 NTS `nts_ruling_search`가 담당)
+- 지방세 조세심판원·감사원·자치단체 질의회신 (이건 OLTA 쪽이 담당 — law.go.kr은
+  판례·법령·해석례·행정규칙·조약·자치법규만 제공)
+- IP 미등록 상태에서는 이 7개 target 전체가 "인증 실패"로 막힘 — 부분 등록(target별
+  개별 허용) 개념은 없음.
 
 ---
 
-## 4. MCP 서버 노출 도구 요약 (현재 v3)
+## 4. 세 시스템 관계 정리
+
+| 항목 | NTS (국세) | OLTA (지방세) | law.go.kr (법제처) |
+|---|---|---|---|
+| 조세심판원 결정례 | 국세 사건만 (조심-YYYY-지역-NNNN) | 지방세 사건만 (조심YYYY지NNNN) | 없음 |
+| 감사원 | 없음 | 있음 (감심YYYY-NNN) | 없음 |
+| 헌법재판소 | 없음 | 있음 | 없음 |
+| 법원판례 | 있음 (국세 사건, taxlaw.nts.go.kr 자체 색인) | 있음 (지방세 사건) | 있음 (전체 법원 판례 DB, 세목 무관) |
+| 사전답변/질의회신 | 있음 (국세청·기재부) | 행안부 유권해석으로 대응 | 없음 (대신 법령해석례 `expc`) |
+| 법령 원문·연혁 | 현행 조문만 (`statute` 컬렉션) | 없음 | 있음 — 연혁 시행본 + 특정 시점 조문(`law_article_as_of`) |
+| 행정규칙(기본통칙 등) | 없음 | 없음 | 있음 (`admin_rule_search`) |
+| 조세조약 | 국제조세 해설(`intl`)만, 조약 원문은 없음 | 없음 | 있음 (`treaty_search`, 조약 원문·발효일) |
+| 자치법규(조례) | 없음 | 없음 | 있음 (`ordinance_search`) |
+
+→ **NTS/OLTA 조세심판원 사건번호 체계가 완전히 달라 실제 중복은 발생하지 않음** (실측 확인).
+`nts_and_olta_precedent_search`의 중복 제거는 만일을 위한 안전장치. law.go.kr의 판례(`prec`)는
+NTS/OLTA의 법원판례와 **별도 DB**라 문서번호 체계도 다르고 중복 제거 대상에도 포함되지 않는다.
+
+---
+
+## 5. MCP 서버 노출 도구 요약 (현재 v5, `server_ext.py` 기준 14개)
+
+### 기본 6개 (`server.py`)
 
 | 도구 | 소스 | 주요 파라미터 |
 |---|---|---|
 | `nts_ruling_search` | NTS | keyword, collections, page, view_count, date_from/to(클라단), sort, tax_type_filter, include_full_text |
 | `nts_ruling_get_by_doc_no` | NTS | doc_no |
 | `olta_ruling_search` | OLTA | keyword, categories, view_count(최대 3 실효), tax_type_filter |
+| `olta_collection_search` | OLTA | keyword, category, page, view_count, date_from/to(서버단), sort |
+| `olta_get_detail` | OLTA | category, doc_id |
 | `nts_and_olta_precedent_search` | 둘 다 | keyword, view_count, tax_type_filter |
+
+### 확장 8개 (`server_ext.py`에서만, law.go.kr)
+
+| 도구 | target | 주요 파라미터 |
+|---|---|---|
+| `court_case_search` | prec | keyword, court, date_from/to, display, page |
+| `court_case_detail` | prec | case_serial, max_chars |
+| `law_interpretation_search` | expc | keyword, display, serial |
+| `law_history_search` | law/eflaw | law_name, law_id, current_only |
+| `law_article_as_of` | eflaw→law | law_name, as_of_date, article_no, law_id |
+| `admin_rule_search` | admrul | keyword, serial, display |
+| `treaty_search` | trty | keyword, serial, display |
+| `ordinance_search` | ordin | keyword, region(클라단 필터), serial, display |
+
+전체 파라미터 설명은 `README.md`의 "도구 파라미터 참고" 참고.
 
 ### 서버 모드
 - **stateful streamable-http** (`stateless_http=False`) — initialize 시 `Mcp-Session-Id` 헤더로
   세션 ID가 발급되며, 이후 모든 요청에 이 헤더를 포함해야 함. 세션 없는 요청은
   `400 Missing session ID`로 거부됨.
-- 세션은 서버 프로세스 메모리에 저장되므로 **Railway 단일 인스턴스(1 replica) 전제**.
-  재배포/재시작 시 기존 세션은 무효화되며 클라이언트가 다시 initialize 해야 함.
+- 세션은 서버 프로세스 메모리에 저장되므로 **단일 인스턴스 전제**. 예전엔 Railway
+  단일 replica가 이 전제를 충족했고, 2026-08 이전 후에는 서버컴퓨터에서 `server_ext.py`
+  프로세스 1개를 상시 구동하는 방식(Tailscale Funnel로 노출)으로 동일한 전제를
+  유지한다. 프로세스 재시작 시 기존 세션은 무효화되며 클라이언트가 다시 initialize 해야 함.
 - 직접 호출(curl/스크립트) 시 필수 헤더: `Accept: application/json, text/event-stream`,
   그리고 initialize 후 받은 `Mcp-Session-Id`.
 
-## 5. 개선 이력 (v4에서 모두 반영 완료)
+## 6. 개선 이력 (v5까지 반영)
 
 1. ~~OLTA 페이지네이션~~ → **완료.** `collection` 파라미터(screen/evaluation/ordinance/
    sentencing/legal/authoritative) + `startCount`(10건 단위) + `startDate/endDate`
@@ -181,6 +265,12 @@
    자동으로 서버측 필터를 사용하고, 그 외 문자열이면 클라이언트단 후처리로 동작.
 4. **NTS 기간 서버 필터** — 미해결 (통합검색 API에는 기간 파라미터가 없음이 재확인됨).
    클라이언트단 필터로 계속 처리. 컬렉션별 전용 화면(사전답변 목록 등)은 추후 조사 가능.
+5. ~~법제처 law.go.kr 통합~~ → **완료 (v5, 2026-08 서버컴퓨터 이전과 함께).** 판례
+   (`prec`)·법령해석례(`expc`)·법령 연혁 및 특정 시점 조문(`law`/`eflaw`)·행정규칙
+   (`admrul`)·조약(`trty`)·자치법규(`ordin`) 6개 target을 `law_go_kr.py`로 클라이언트화하고,
+   `server_ext.py`에서 도구 8개로 노출. `law_article_as_of`의 조문 위치 기반 슬라이스
+   파싱 방식은 2026-07-21에 별도로 확립되어 있던 것을 이전 과정에서 통합했다. IP
+   화이트리스트 전제는 3장 참고.
 
 ### NTS 세목 코드표 (실측)
 
