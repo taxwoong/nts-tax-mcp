@@ -104,15 +104,29 @@ def law_article_as_of(law_name: str, as_of_date: str, article_no: str,
 
 
 @mcp.tool()
-def admin_rule_search(keyword: str, serial: str = "", display: int = 10) -> object:
-    """행정규칙(훈령·예규·고시) 검색/조회 — 기본통칙·조사사무처리규정·국세청 고시.
+def admin_rule_search(keyword: str, serial: str = "", display: int = 10,
+                      article: str = "", max_chars: int = 10000,
+                      start_char: int = 0) -> object:
+    """행정규칙(훈령·예규·고시) 검색/조회 — 기본통칙·조사사무처리규정·국세청 고시·외국환거래규정.
 
     serial 없이 호출하면 키워드 검색(규칙명·종류·소관부처·발령일자 목록),
-    serial(일련번호)을 주면 본문 전문을 반환한다.
-    예: "법인세법 기본통칙", "조사사무처리규정", "상속세 및 증여세 사무처리규정"
+    serial(일련번호)을 주면 본문을 반환한다.
+    예: "법인세법 기본통칙", "조사사무처리규정", "외국환거래규정"
+
+    외국환거래규정(30만 자) 같은 대형 고시는 전문이 max_chars에 잘리므로
+    article에 조번호를 지정해 해당 조문만 받는 것을 권장한다
+    (예: 해외직접투자 신고 = article="9-5"). 응답의 "잘림" 안내를 따르면 된다.
+
+    Args:
+        keyword: 검색어 (serial 없이 호출 시)
+        serial: 행정규칙 일련번호 — 지정하면 본문 조회
+        display: 검색 결과 수 (기본 10)
+        article: 조번호 — "9-5"(제9-5조), "23", "23의2" 형식. 해당 조문만 반환
+        max_chars: 본문 최대 길이 (기본 10000)
+        start_char: 본문 시작 오프셋 — 조번호를 모를 때 이어 읽기용
     """
     if serial:
-        return _safe(_law.get_admin_rule, serial)
+        return _safe(_law.get_admin_rule, serial, max_chars, article, start_char)
     return _safe(_law.search_admin_rules, keyword, display)
 
 

@@ -217,18 +217,48 @@ class LawGoKrClient:
             "시행일자": it.get("시행일자", ""),
         } for it in items]
 
-    def get_admin_rule(self, serial: str, max_chars: int = 10000):
-        """target=admrul 행정규칙 본문."""
+    def get_admin_rule(self, serial: str, max_chars: int = 10000,
+                       article: str = "", start_char: int = 0):
+        """target=admrul 행정규칙 본문.
+        article: 조번호를 주면 해당 조문만 슬라이스 — "9-5"(외국환거래규정식 제9-5조),
+        "23", "23의2" 형식. 외국환거래규정(30만 자) 같은 대형 고시는 전문 반환이
+        불가능하므로 조번호 지정이 사실상 필수. start_char: 조번호를 모를 때
+        해당 위치부터 max_chars만큼 이어 읽는 오프셋."""
         xml = _get("lawService.do", target="admrul", ID=serial)
         name = re.search(r"<행정규칙명>(.*?)</행정규칙명>", xml, re.S)
         body = _strip_tags(_strip_cdata(xml))
         if len(body) < 50:
             return {"오류": "본문 없음", "응답": xml[:200]}
-        return {
+        out = {
             "행정규칙명": _strip_cdata(name.group(1)) if name else "",
-            "본문": body[:max_chars],
             "본문길이": len(body),
         }
+        if article:
+            a = article.strip()
+            am = re.match(r"^([\d-]+)(의\d+)?$", a)
+            base, ui = (am.group(1), am.group(2) or "") if am else (a, "")
+            # 조문 표제는 행 첫머리 "제9-5조(제목)" 형태 — 본문 중 인용("제7-31조의 규정 …")과
+            # 행 앵커로 구분한다. 표제가 행 중간에 오는 규칙이면 못 찾으므로 start_char로 폴백.
+            m = re.search(rf"(?m)^제{re.escape(base)}조{ui}(?=\(|\s|$)", body)
+            if not m:
+                out["오류"] = (f"제{a}조 표제를 찾지 못함 — 조번호 형식(예: '9-5', '23', '23의2')을 "
+                             f"확인하거나 start_char 오프셋으로 조회")
+                return out
+            nm = re.search(r"(?m)^제[\d-]+조(?:의\d+)?\s*(?=\()", body[m.end():])
+            seg = body[m.start():m.end() + nm.start()] if nm else body[m.start():]
+            out["조문"] = f"제{a}조"
+            out["본문"] = seg[:max_chars]
+            if len(seg) > max_chars:
+                out["잘림"] = (f"이 조문 전체 {len(seg)}자 중 앞 {max_chars}자만 표시됨 — "
+                             f"max_chars를 {len(seg)} 이상으로 지정해 다시 조회")
+            return out
+        window = body[start_char:start_char + max_chars]
+        out["본문"] = window
+        if start_char + len(window) < len(body):
+            out["잘림"] = (f"전체 {len(body)}자 중 {start_char}~{start_char + len(window)}자 구간만 표시됨 — "
+                         f"start_char={start_char + len(window)}로 이어서 조회하거나, "
+                         f"article에 조번호(예: '9-5')를 지정하면 해당 조문만 반환")
+        return out
 
     # ---------- 조세조약 등 조약 ----------
     def search_treaties(self, keyword: str, display: int = 10, page: int = 1):
