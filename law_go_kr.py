@@ -11,11 +11,18 @@ nts-tax-mcp 확장 모듈: 대법원 판례 · 법령(현행+연혁) · 법령�
 import os
 import re
 import html
+import time
 import requests
 
 BASE = "http://www.law.go.kr/DRF"
 OC = os.environ.get("LAW_API_OC", "")
 TIMEOUT = 20
+
+# 같은 법령의 조문을 연속 조회하면 매번 법 전체 XML(소득세법 61만 자 등)을
+# 다시 받게 되므로, 응답을 짧게 캐싱한다. 법령 개정은 실시간이 아니므로 안전.
+_CACHE_TTL = 600   # 초
+_CACHE_MAX = 16    # 전문 XML이 커서(수십만 자) 항목 수로 메모리 상한
+_cache = {}        # key -> (만료시각, 응답텍스트)
 
 _TAG_RE = re.compile(r"<([^/>\s]+)>\s*(.*?)\s*</\1>", re.S)
 
@@ -38,12 +45,20 @@ def _get(endpoint: str, **params) -> str:
         raise LawGoKrError("LAW_API_OC 환경변수가 설정되지 않았습니다 — law.go.kr에서 발급받은 기관코드(OC)를 설정하세요.")
     p = {"OC": OC, "type": "XML"}
     p.update({k: v for k, v in params.items() if v not in (None, "", 0)})
+    key = (endpoint, tuple(sorted(p.items())))
+    hit = _cache.get(key)
+    now = time.time()
+    if hit and hit[0] > now:
+        return hit[1]
     r = requests.get(f"{BASE}/{endpoint}", params=p, timeout=TIMEOUT,
                      headers={"User-Agent": "nts-tax-mcp/1.0"})
     r.raise_for_status()
     text = r.text
     if "인증" in text[:500] and "실패" in text[:500]:
         raise LawGoKrError("law.go.kr 인증 실패 — OC 또는 IP 등록 확인 필요 (open.law.go.kr에서 현재 서버 IP 등록)")
+    if len(_cache) >= _CACHE_MAX:
+        del _cache[min(_cache, key=lambda k: _cache[k][0])]
+    _cache[key] = (now + _CACHE_TTL, text)
     return text
 
 
@@ -143,7 +158,8 @@ class LawGoKrClient:
         rows = []
         page = 1
         while len(rows) < max_rows and page <= 5:
-            xml = _get("lawSearch.do", target="eflaw", query=law_name, numOfRows=100, page=page)
+            # 페이지 크기 파라미터는 display가 맞음 — numOfRows는 무시되어 20건씩 5왕복하게 됨 (2026-08-18 실측)
+            xml = _get("lawSearch.do", target="eflaw", query=law_name, display=100, page=page)
             items = _parse_items(xml, "law")
             if not items:
                 break
