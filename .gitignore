@@ -2,4 +2,9 @@ __pycache__/
 *.pyc
 .env
 server.log
+server.log.old
 local_env.bat
+.venv/
+# 로컬 전용 문서 — 작업로그에는 기관코드(OC) 등 개인 식별정보가 남을 수 있어 저장소에 올리지 않음
+작업로그_*.md
+이사가이드.md
