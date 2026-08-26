@@ -184,6 +184,11 @@ class LawGoKrClient:
         """lawService target=law&MST=… 원문에서 조번호 슬라이스.
         article_no: '17' 또는 '17의2' (패딩 없음)."""
         xml = _get("lawService.do", target="law", MST=mst)
+        # 조문 뒤에 <부칙> 섹션(수십만 자)이 이어지므로 슬라이스 범위에서 잘라낸다 —
+        # 안 자르면 마지막 조문 조회 시 부칙 전체가 본문에 딸려 나온다. 부칙은 law_addenda로.
+        cut = xml.find("<부칙>")
+        if cut != -1:
+            xml = xml[:cut]
         base_no, branch_no = article_no, None
         m = re.match(r"^(\d+)의(\d+)$", article_no.strip())
         if m:
@@ -210,13 +215,181 @@ class LawGoKrClient:
             out = {
                 "조문": label,
                 "조문제목": _strip_cdata(title.group(1)) if title else "",
-                "원문": body[:max_chars],
             }
+            # 조문단위마다 개별 시행일자가 달려 있다(같은 법이라도 조문별 시행일이 다를 수 있음)
+            em = re.search(r"<조문시행일자>(\d+)</조문시행일자>", block)
+            if em:
+                out["조문시행일자"] = em.group(1)
+            out["원문"] = body[:max_chars]
             if len(body) > max_chars:
                 out["잘림"] = (f"전체 {len(body)}자 중 앞 {max_chars}자만 표시됨 — "
                              f"max_chars를 {len(body)} 이상으로 지정해 다시 조회하면 전문을 볼 수 있음")
             return out
         raise LawGoKrError(f"MST {mst}에서 제{article_no}조를 찾지 못함")
+
+    # ---------- 부칙 (시행일·적용례·경과조치) ----------
+    @staticmethod
+    def _split_addendum(text: str):
+        """부칙 본문을 '제N조(…)' 항 단위로 분할. 조 편제 없는 단순 부칙은 통짜 1개.
+        구식 '제1조 (시행일)'처럼 조와 괄호 사이 공백이 있는 표기도 같은 앵커로 잡힌다."""
+        starts = [m.start() for m in re.finditer(r"(?m)^제\d+조(?:의\d+)?\s*\(", text)]
+        if not starts:
+            t = text.strip()
+            return [t] if t else []
+        parts = []
+        head = text[:starts[0]].strip()
+        if head:
+            parts.append(head)  # "부칙 <제21221호,2025.12.23>" 머리말
+        for i, s in enumerate(starts):
+            e = starts[i + 1] if i + 1 < len(starts) else len(text)
+            parts.append(text[s:e].strip())
+        return parts
+
+    @staticmethod
+    def _effective_summary(body: str, limit: int = 350):
+        """부칙에서 시행일 부분만 요약 — 첫 '시행한다' 줄 + '각 호' 단서면 이어지는 호 목록."""
+        m = re.search(r"(?m)^\s*(.*?시행한다.*)$", body)
+        if not m:
+            first = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
+            return first[:limit]
+        lines = [m.group(1).strip()]
+        if "각 호" in lines[0]:
+            for ln in body[m.end():].splitlines():
+                t = ln.strip()
+                if not t:
+                    continue
+                if re.match(r"^\d+\.", t):
+                    lines.append(t)
+                else:
+                    break
+        out = " ".join(lines)
+        return out[:limit] + ("…" if len(out) > limit else "")
+
+    def law_addenda(self, mst: str = "", law_name: str = "", law_id: str = "",
+                    as_of_date: str = "", promul_no: str = "", article_no: str = "",
+                    recent: int = 10, max_chars: int = 8000):
+        """법령 부칙(附則) 조회 — 개정규정의 시행일·적용례·경과조치.
+        lawService target=law 응답의 <부칙단위> 목록을 파싱한다 (2026-08-26 실측:
+        소득세법 현행본에 부칙 114건, 각각 공포일자·공포번호·본문 보유).
+
+        - mst 미지정 시 law_name으로 시행본 자동 선택 (as_of_date 주면 그 시점본, 없으면 현행)
+        - promul_no: 그 공포번호 개정의 부칙 전문 (공포번호는 law_history_search 목록에 있음)
+        - article_no: 전체 부칙에서 그 조문이 언급된 항(적용례·경과조치)만 최신순 발췌
+        - 둘 다 없으면: 최신순 recent건 목록 (공포일자·공포번호·시행일 요약)
+        """
+        if not mst:
+            if not law_name:
+                raise LawGoKrError("mst 또는 law_name 중 하나는 필요합니다")
+            if as_of_date:
+                history = self.law_history(law_name, law_id=law_id)
+                chosen = None
+                for row in history:  # 시행일자 오름차순
+                    if row["시행일자"] and row["시행일자"] <= as_of_date:
+                        chosen = row
+                if not chosen:
+                    raise LawGoKrError(f"{as_of_date} 이전 시행본 없음: {law_name}")
+            else:
+                rows = self.search_laws(law_name)
+                if law_id:
+                    rows = [r for r in rows if r.get("법령ID") == law_id]
+                exact = [r for r in rows if r.get("법령명") == law_name.strip()]
+                pick = exact or rows  # "소득세법" 검색에 시행령·시행규칙이 섞여 나와 정확 일치 우선
+                if not pick:
+                    raise LawGoKrError(f"법령 검색 결과 없음: {law_name}")
+                chosen = pick[0]
+            mst = chosen["MST"]
+        xml = _get("lawService.do", target="law", MST=mst)
+        name = re.search(r"<법령명_한글>(.*?)</법령명_한글>", xml, re.S)
+        enf = re.search(r"<시행일자>(\d+)</시행일자>", xml)
+        units = []
+        for m in re.finditer(r"<부칙단위[^>]*>(.*?)</부칙단위>", xml, re.S):
+            blk = m.group(1)
+            dt = re.search(r"<부칙공포일자>(\d+)</부칙공포일자>", blk)
+            no = re.search(r"<부칙공포번호>(\d+)</부칙공포번호>", blk)
+            bd = re.search(r"<부칙내용>(.*?)</부칙내용>", blk, re.S)
+            body = _strip_cdata(bd.group(1)) if bd else ""
+            # 머리말 "부칙 <제21221호,2025.12.23>"의 꺾쇠가 태그 제거에 지워지지 않게 보존
+            body = re.sub(r"<(제\d+호[^>]*?)>", r"〈\1〉", body)
+            body = _strip_tags(body)
+            body = re.sub(r"[ \t]+\n", "\n", body)
+            body = re.sub(r"\n{2,}", "\n", body)  # CDATA 조각 사이 빈 줄 압축
+            units.append({
+                "공포일자": dt.group(1) if dt else "",
+                "공포번호": no.group(1).lstrip("0") if no else "",  # "04803" 식 패딩 제거
+                "본문": body,
+            })
+        if not units:
+            raise LawGoKrError(f"MST {mst} 응답에 부칙 없음 — 응답 앞부분: {xml[:200]}")
+        out = {
+            "법령명": _strip_cdata(name.group(1)) if name else "",
+            "MST": mst,
+            "시행본_시행일자": enf.group(1) if enf else "",
+            "부칙총수": len(units),
+        }
+        # 조문별 시행일이 다른 개정이면 그 내역이 헤더에 요약돼 있다
+        # (예: "20260701:제57조의2, … 20270101:제17조제3항, …")
+        multi = re.search(r"<조문시행일자문자열>(.*?)</조문시행일자문자열>", xml, re.S)
+        multi_txt = _strip_cdata(multi.group(1)) if multi else ""
+        if multi_txt:
+            out["조문별_상이한_시행일"] = multi_txt
+
+        if promul_no:
+            want = promul_no.strip().lstrip("0") or promul_no.strip()
+            hits = [u for u in units if u["공포번호"] == want]
+            if not hits:
+                raise LawGoKrError(
+                    f"공포번호 {promul_no}의 부칙이 이 시행본에 없음 (부칙 {len(units)}건 보유) — "
+                    f"law_history_search로 공포번호를 확인하세요")
+            u = hits[-1]
+            body = u["본문"]
+            out["부칙"] = {"공포일자": u["공포일자"], "공포번호": u["공포번호"],
+                          "본문": body[:max_chars]}
+            if len(body) > max_chars:
+                out["잘림"] = (f"이 부칙 전체 {len(body)}자 중 앞 {max_chars}자만 표시됨 — "
+                             f"max_chars를 {len(body)} 이상으로 지정해 다시 조회")
+            return out
+
+        if article_no:
+            a = article_no.strip()
+            am = re.match(r"^(\d+)(?:의(\d+))?$", a)
+            if not am:
+                raise LawGoKrError(f"article_no 형식 오류: '{a}' (예: '96', '104의3')")
+            label = f"제{am.group(1)}조" + (f"의{am.group(2)}" if am.group(2) else "")
+            # '제96조' 검색이 '제96조의2' 언급에 오매치되지 않게 가지조문 아니면 (?!의) 가드
+            pat = re.compile(re.escape(label) + ("" if am.group(2) else r"(?!의)"))
+            found, used = [], 0
+            for u in reversed(units):  # 최신 개정부터
+                paras = [p[:1500] for p in self._split_addendum(u["본문"]) if pat.search(p)]
+                if not paras:
+                    continue
+                size = sum(len(p) for p in paras)
+                if found and used + size > max_chars:
+                    out["잘림"] = (f"{label} 언급 부칙이 더 있으나 max_chars({max_chars}) 초과로 "
+                                 f"최신 {len(found)}건까지만 표시 — max_chars를 늘려 다시 조회")
+                    break
+                used += size
+                found.append({"공포일자": u["공포일자"], "공포번호": u["공포번호"],
+                              "해당항": paras})
+            out["조문"] = label
+            out["언급된_부칙_최신순"] = found
+            if not found:
+                out["안내"] = (f"{label}이(가) 언급된 부칙 조항 없음 — 그 조문 개정에 별도 "
+                             f"적용례·경과조치가 없었다는 뜻일 수 있음 (이때 시행일은 각 시행본의 "
+                             f"시행일자·부칙 제1조를 따름)")
+            return out
+
+        rows = []
+        for u in reversed(units):  # 최신순
+            rows.append({"공포일자": u["공포일자"], "공포번호": u["공포번호"],
+                         "시행일": self._effective_summary(u["본문"])})
+            if len(rows) >= max(1, recent):
+                break
+        out["부칙목록_최신순"] = rows
+        if len(units) > len(rows):
+            out["안내"] = (f"전체 {len(units)}건 중 최신 {len(rows)}건만 표시 — recent를 늘리거나, "
+                         f"특정 개정의 부칙 전문은 promul_no로, 특정 조문의 적용시기는 "
+                         f"article_no로 조회")
+        return out
 
     # ---------- 행정규칙 (훈령·예규·고시·기본통칙) ----------
     def search_admin_rules(self, keyword: str, display: int = 10, page: int = 1):

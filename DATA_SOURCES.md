@@ -151,7 +151,7 @@ law.go.kr(법제처)은 2026-08 서버컴퓨터 이전 시 `server_ext.py`로 �
 |---|---|---|
 | `prec` | 판례 (대법원·하급심) | `court_case_search`, `court_case_detail` |
 | `expc` | 법령해석례 | `law_interpretation_search` |
-| `law` | 현행 법령 검색 / 특정 시행본(MST) 원문 | `law_history_search`(current_only), `law_article_as_of` 내부 |
+| `law` | 현행 법령 검색 / 특정 시행본(MST) 원문 | `law_history_search`(current_only), `law_article_as_of` 내부, `law_addenda_search` 내부 |
 | `eflaw` | 법령 연혁(전체 시행본 목록) | `law_history_search`, `law_article_as_of` 내부 |
 | `admrul` | 행정규칙 (훈령·예규·고시·기본통칙) | `admin_rule_search` |
 | `trty` | 조약 (조세조약 포함) | `treaty_search` |
@@ -163,7 +163,8 @@ law.go.kr(법제처)은 2026-08 서버컴퓨터 이전 시 `server_ext.py`로 �
 |---|---|---|
 | 판례(`prec`) | 판례일련번호, 사건명, 사건번호, 법원명, 선고일자, 판결유형, 사건종류명 | 판시사항, 판결요지, 참조조문, 참조판례, 판례내용 |
 | 법령해석례(`expc`) | 해석례일련번호, 안건명, 안건번호, 회신기관, 회신일자 | 질의요지, 회답, 이유 |
-| 법령(`law`/`eflaw`) | 법령명, 법령ID, MST(법령일련번호), 시행일자, 공포일자, 공포번호, 제개정구분 | 조문 원문(조번호 기준 슬라이스), 조문제목 |
+| 법령(`law`/`eflaw`) | 법령명, 법령ID, MST(법령일련번호), 시행일자, 공포일자, 공포번호, 제개정구분 | 조문 원문(조번호 기준 슬라이스), 조문제목, 조문시행일자 |
+| 법령 부칙(`law` 원문 내 `<부칙단위>`) | 공포일자, 공포번호, 시행일 요약 (헤더 `<조문시행일자문자열>` = 조문별 상이한 시행일) | 부칙 전문 (시행일·적용례·경과조치), 조문 언급 항 발췌 |
 | 행정규칙(`admrul`) | 일련번호, 행정규칙명, 종류, 소관부처, 발령일자, 발령번호, 시행일자 | 본문 전체(길이 포함) |
 | 조약(`trty`) | 조약일련번호, 조약명, 조약구분, 서명일자, 발효일자 | 본문 전체(길이 포함) |
 | 자치법규(`ordin`) | 일련번호, 자치법규명, 지자체, 공포일자, 시행일자, 제개정구분 | 본문 전체(길이 포함) |
@@ -178,6 +179,11 @@ law.go.kr(법제처)은 2026-08 서버컴퓨터 이전 시 `server_ext.py`로 �
   같은 이름의 본법/시행령/시행규칙이 섞여 의도치 않은 시행본이 선택될 수 있음.
 - **`law_history_search`**: `eflaw`를 페이지당 100건씩 최대 5페이지(최대 500건)까지
   수집. 그 이상 시행본이 있는 법령은 일부 누락 가능(극히 드문 케이스).
+- **`law_addenda_search`**: `law` 원문(MST 단위) 응답의 `<부칙>` 섹션을 파싱
+  (2026-08-26 실측: 소득세법 현행본에 `<부칙단위>` 114건 — 각각 `<부칙공포일자>`·
+  `<부칙공포번호>`·`<부칙내용>`(CDATA) 보유. 시행령도 동일 구조, 208건). 공포번호는
+  "04803"처럼 0 패딩돼 오므로 비교 시 정규화. 조문 슬라이스와 같은 XML을 쓰므로
+  10분 캐시를 공유한다 — 조문 조회 직후 부칙 조회는 HTTP 왕복 없음.
 - **`ordinance_search`**의 `region` 필터는 **서버측이 아닌 클라이언트단 후처리**
   (반환된 지자체기관명에 문자열 포함 여부로 필터링).
 - **`treaty_search`**: API 응답의 아이템 태그가 `Trty`/`trty`로 대소문자가 섞여 오는
@@ -212,7 +218,7 @@ NTS/OLTA의 법원판례와 **별도 DB**라 문서번호 체계도 다르고 �
 
 ---
 
-## 5. MCP 서버 노출 도구 요약 (현재 v5, `server_ext.py` 기준 14개)
+## 5. MCP 서버 노출 도구 요약 (현재 v5.3, `server_ext.py` 기준 15개)
 
 ### 기본 6개 (`server.py`)
 
@@ -225,7 +231,7 @@ NTS/OLTA의 법원판례와 **별도 DB**라 문서번호 체계도 다르고 �
 | `olta_get_detail` | OLTA | category, doc_id |
 | `nts_and_olta_precedent_search` | 둘 다 | keyword, view_count, tax_type_filter |
 
-### 확장 8개 (`server_ext.py`에서만, law.go.kr)
+### 확장 9개 (`server_ext.py`에서만, law.go.kr)
 
 | 도구 | target | 주요 파라미터 |
 |---|---|---|
@@ -234,6 +240,7 @@ NTS/OLTA의 법원판례와 **별도 DB**라 문서번호 체계도 다르고 �
 | `law_interpretation_search` | expc | keyword, display, serial |
 | `law_history_search` | law/eflaw | law_name, law_id, current_only |
 | `law_article_as_of` | eflaw→law | law_name, as_of_date, article_no, law_id |
+| `law_addenda_search` | law (부칙 섹션) | law_name/mst, law_id, as_of_date, promul_no, article_no, recent, max_chars |
 | `admin_rule_search` | admrul | keyword, serial, display |
 | `treaty_search` | trty | keyword, serial, display |
 | `ordinance_search` | ordin | keyword, region(클라단 필터), serial, display |

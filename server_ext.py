@@ -2,7 +2,7 @@
 """
 server_ext.py — nts-tax-mcp 확장 진입점
 기존 server.py의 도구 6개(국세 NTS + 지방세 olta)를 그대로 물려받고,
-법제처 law.go.kr Open API 도구 5개를 추가한다. 커넥터 하나로 통합 운영.
+법제처 law.go.kr Open API 도구 9개를 추가한다. 커넥터 하나로 통합 운영.
 
 실행: PORT=8734 LAW_API_OC=<발급받은 기관코드> python server_ext.py
 (run_server.bat이 이 파일을 실행한다. server.py는 수정하지 않는다.)
@@ -72,6 +72,8 @@ def law_history_search(law_name: str, law_id: str = "", current_only: bool = Fal
 
     세법은 개정이 잦아 예규·판례가 인용한 '당시 조문'을 봐야 할 때가 많다.
     이 도구로 시행본 목록을 확인하고, 특정 시점 조문은 law_article_as_of를 쓴다.
+    목록의 공포번호를 law_addenda_search(promul_no=…)에 넣으면 그 개정의
+    부칙(시행일·적용례·경과조치) 전문을 볼 수 있다.
 
     Args:
         law_name: 법령명 (예: "부가가치세법")
@@ -91,6 +93,8 @@ def law_article_as_of(law_name: str, as_of_date: str, article_no: str,
 
     예규 회신일·판결 선고일 당시의 조문을 확인할 때 사용한다. 연혁 시행본 중
     as_of_date 이하 최대 시행일자 본을 자동 선택해 조문을 잘라 반환한다.
+    응답에 그 조문의 개별 시행일(조문시행일자)이 포함되며, 개정규정의 적용례
+    ("시행 이후 양도분부터 적용" 등)까지 필요하면 law_addenda_search를 쓴다.
 
     Args:
         law_name: 법령명 (예: "소득세법 시행령")
@@ -101,6 +105,37 @@ def law_article_as_of(law_name: str, as_of_date: str, article_no: str,
             거기 안내된 길이 이상으로 지정해 다시 호출하면 전문을 받는다.
     """
     return _safe(_law.law_article_as_of, law_name, as_of_date, article_no, law_id, max_chars)
+
+
+@mcp.tool()
+def law_addenda_search(law_name: str = "", mst: str = "", law_id: str = "",
+                       as_of_date: str = "", promul_no: str = "",
+                       article_no: str = "", recent: int = 10,
+                       max_chars: int = 8000) -> dict:
+    """법령 부칙(附則) 조회 — 개정규정이 '언제 시행되고 어떤 분부터 적용되는지' 확인.
+
+    개정 세법의 시행일, 적용례("이 법 시행 이후 양도하는 분부터 적용"), 경과조치는
+    본문 조문이 아니라 부칙에 있다. 이 도구가 그 부칙을 가져온다. 세 가지 사용법:
+
+    1) 목록: law_name(또는 mst)만 주면 부칙 목록을 최신순으로 반환
+       — 각 부칙의 공포일자·공포번호·시행일 요약. 조문별 시행일이 다르면 그 내역도 포함
+    2) 특정 개정의 부칙 전문: promul_no(공포번호) 지정
+       — law_history_search 결과의 공포번호를 넣으면 그 개정의 시행일·적용례·경과조치 전문
+    3) 특정 조문의 적용시기: article_no 지정 (예: "96", "104의3")
+       — 전체 부칙에서 그 조문이 언급된 적용례·경과조치 항만 최신순으로 발췌
+
+    Args:
+        law_name: 법령명 (예: "소득세법", "법인세법 시행령") — mst 미지정 시 필수
+        mst: 법령일련번호를 직접 지정 (law_history_search·law_article_as_of 결과의 MST)
+        law_id: 법령ID 필터 (같은 이름의 본법/시행령 혼입 방지)
+        as_of_date: YYYYMMDD — 이 날짜 당시 시행본의 부칙을 조회 (미지정 시 현행본)
+        promul_no: 공포번호 (예: "21221") — 그 개정 부칙의 전문 반환
+        article_no: 조번호 (예: "96", "57의2") — 그 조문이 언급된 부칙 항만 발췌
+        recent: 목록 모드에서 반환할 부칙 수 (기본 10, 최신순)
+        max_chars: 본문 최대 길이 (기본 8000). 응답에 "잘림"이 있으면 늘려서 재조회
+    """
+    return _safe(_law.law_addenda, mst, law_name, law_id, as_of_date,
+                 promul_no, article_no, recent, max_chars)
 
 
 @mcp.tool()
@@ -157,5 +192,5 @@ def ordinance_search(keyword: str, region: str = "", serial: str = "", display: 
 
 
 if __name__ == "__main__":
-    logger.info("nts-tax-mcp 확장판 기동 — 기존 6개 + 법제처 8개 도구")
+    logger.info("nts-tax-mcp 확장판 기동 — 기존 6개 + 법제처 9개 도구")
     mcp.run(transport="streamable-http")
