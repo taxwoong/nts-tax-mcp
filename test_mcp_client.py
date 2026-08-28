@@ -9,10 +9,14 @@ Claude 쪽 채팅에서 "도구가 안 잡힌다"는 문제가 생겼을 때,
 - 이 스크립트도 실패하면 -> 서버 자체(Railway 배포, 코드) 문제.
 로 원인을 빠르게 나눠볼 수 있습니다.
 
+서버는 stateful streamable-http 모드라, initialize 응답 헤더로 받은 Mcp-Session-Id를
+이후 모든 요청에 실어야 하고 initialize 직후 notifications/initialized를 보내야 한다
+(안 그러면 tools/list부터 400 Bad Request).
+
 사용법:
-    python test_mcp_client.py
-    python test_mcp_client.py --url https://web-production-10fe2.up.railway.app/mcp
+    python test_mcp_client.py                              # 기본: 로컬 8734
     python test_mcp_client.py --url http://127.0.0.1:8000/mcp
+    python test_mcp_client.py --url https://<서버-tailnet-주소>/mcp
 """
 
 import argparse
@@ -37,14 +41,24 @@ def _parse_sse(text: str) -> dict:
     return json.loads(text)
 
 
-def call(url: str, payload: dict, session_id: str = None) -> dict:
+def _post(url: str, payload: dict, session_id: str = None):
+    """(응답 dict or None, 세션ID) — 알림(notification)은 본문 없이 202로 오므로 None."""
     headers = dict(HEADERS)
     if session_id:
         headers["Mcp-Session-Id"] = session_id
     resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=20)
     resp.raise_for_status()
     resp.encoding = "utf-8"  # 서버가 인코딩을 명시하지 않는 경우 requests가 잘못 추측하는 것을 방지
-    return _parse_sse(resp.text)
+    # 서버는 stateful 모드라 initialize 응답 헤더로 세션 ID를 발급한다.
+    # 이후 모든 요청에 이 헤더가 없으면 400 Missing session ID로 거부된다.
+    new_sid = resp.headers.get("Mcp-Session-Id") or session_id
+    if not resp.text.strip():
+        return None, new_sid
+    return _parse_sse(resp.text), new_sid
+
+
+def call(url: str, payload: dict, session_id: str = None) -> dict:
+    return _post(url, payload, session_id)[0]
 
 
 def run(url: str) -> bool:
@@ -52,10 +66,10 @@ def run(url: str) -> bool:
 
     print(f"대상 서버: {url}\n")
 
-    # 1) initialize
+    # 1) initialize (+ 세션 ID 확보 + initialized 알림)
     print("[1/4] initialize 핸드셰이크...")
     try:
-        result = call(url, {
+        result, sid = _post(url, {
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {
                 "protocolVersion": "2024-11-05",
@@ -65,6 +79,9 @@ def run(url: str) -> bool:
         })
         server_info = result.get("result", {}).get("serverInfo", {})
         print(f"    성공 — 서버 이름: {server_info.get('name')}, 버전: {server_info.get('version')}")
+        print(f"    세션 ID: {sid if sid else '(발급 안 됨 — stateless 모드일 수 있음)'}")
+        # MCP 프로토콜상 initialize 직후 이 알림을 보내야 서버가 요청을 받기 시작한다
+        _post(url, {"jsonrpc": "2.0", "method": "notifications/initialized"}, sid)
     except Exception as e:
         print(f"    실패: {e}")
         return False
@@ -72,13 +89,18 @@ def run(url: str) -> bool:
     # 2) tools/list
     print("[2/4] tools/list 조회...")
     try:
-        result = call(url, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        result = call(url, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, sid)
         tools = result.get("result", {}).get("tools", [])
         names = [t["name"] for t in tools]
-        print(f"    성공 — 등록된 도구: {names}")
-        if "nts_ruling_search" not in names or "nts_ruling_get_by_doc_no" not in names:
-            print("    경고: 예상한 도구 이름이 목록에 없습니다.")
+        print(f"    성공 — 등록된 도구 {len(names)}개: {names}")
+        expected = ["nts_ruling_search", "nts_ruling_get_by_doc_no", "verify_citations"]
+        missing = [n for n in expected if n not in names]
+        if missing:
+            print(f"    경고: 예상한 도구가 목록에 없습니다: {missing}")
             ok = False
+        if "law_article_diff" not in names:
+            print("    참고: 법제처 확장 도구(law_article_diff)가 없습니다 — "
+                  "server.py 단독 실행 중이면 정상, server_ext.py로 띄웠다면 확인 필요")
     except Exception as e:
         print(f"    실패: {e}")
         return False
@@ -92,7 +114,7 @@ def run(url: str) -> bool:
                 "name": "nts_ruling_get_by_doc_no",
                 "arguments": {"doc_no": "조심-2023-서-9465"},
             },
-        })
+        }, sid)
         text = result["result"]["content"][0]["text"]
         parsed = json.loads(text)
         if parsed.get("found"):
@@ -118,7 +140,7 @@ def run(url: str) -> bool:
                     "include_full_text": False,
                 },
             },
-        })
+        }, sid)
         text = result["result"]["content"][0]["text"]
         parsed = json.loads(text)
         precedent = parsed.get("precedent", {})
@@ -140,8 +162,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="nts-tax-mcp 서버 독립 검증 스크립트")
     parser.add_argument(
         "--url",
-        default="https://web-production-10fe2.up.railway.app/mcp",
-        help="테스트할 MCP 서버 URL (기본값: 배포된 Railway 서버)",
+        default="http://127.0.0.1:8734/mcp",
+        help="테스트할 MCP 서버 URL (기본값: 서버컴퓨터 로컬 포트 8734). "
+             "외부에서 점검하려면 Funnel 주소를 지정하세요 — "
+             "주소는 서버컴퓨터에서 'tailscale funnel status'로 확인",
     )
     args = parser.parse_args()
 
