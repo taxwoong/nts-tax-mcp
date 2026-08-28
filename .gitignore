@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
+# 픽스처(tests/fixtures/*.gz)는 파서 회귀 테스트에 필요하므로 커밋한다 —
+# refresh_fixtures.py가 저장 전 OC 키·사설 IP를 마스킹한다
 .env
 server.log
 server.log.old

@@ -177,8 +177,28 @@ law.go.kr(법제처)은 2026-08 서버컴퓨터 이전 시 `server_ext.py`로 �
   순차 슬라이스**로 조문을 잘라낸다 (단순 `<조문>…</조문>` 정규식은 실패함을 확인,
   2026-07-21). 가지조문(`104의3` 형식)도 `<조문가지번호>`로 매칭. `law_id`를 안 주면
   같은 이름의 본법/시행령/시행규칙이 섞여 의도치 않은 시행본이 선택될 수 있음.
-- **`law_history_search`**: `eflaw`를 페이지당 100건씩 최대 5페이지(최대 500건)까지
-  수집. 그 이상 시행본이 있는 법령은 일부 누락 가능(극히 드문 케이스).
+  **시행본 선택 주의 (v5.4에서 수정된 실제 버그 2건, 2026-08-28 실측)**:
+  ① 같은 시행일자에 여러 공포본이 온다 — 조문별 단계 시행 때문에 옛 공포본이 미래
+  시행일자 행으로 재등장하기 때문(소득세법 시행일자 20250101에 MST 6개). 시행일자만으로
+  정렬하면 '기준일 이하 마지막 행'이 그 그룹의 최고(最古) 공포본이 되어 옛 문안을 반환했다
+  (as_of 20250315 제55조 → 2020.12.29 공포본 반환, 정답은 2024.12.31 공포본).
+  정렬 키를 (시행일자, 공포일자, 공포번호)로 확장해 해결.
+  ② 시행본 XML에는 아직 시행 전인 조문의 문안까지 들어 있다 — `_pick_effective_version`이
+  후보의 `<조문시행일자>`가 기준일보다 미래이면 이전 시행본으로 소급 선택한다
+  (최대 8단계, 같은 MST 중복 행은 1회만 조회).
+- **`law_history_search`**: `eflaw`를 페이지당 100건씩 최대 10페이지(최대 500행)까지
+  수집. v5.4에서 수집 기본 상한을 100행→500행으로 확대 — 100행에서 끊으면 소득세법
+  같은 다개정 법령은 2011년 이전 연혁이 통째로 누락되어 `law_article_as_of`·
+  `law_article_diff`의 과거 시점 조회가 깨졌다 (2026-08-28 실측: 소득세법 224행,
+  1949년부터 전체 커버).
+- **`law_article_diff`** (v5.4): 두 기준일의 시행본을 각각 고른 뒤 조문 블록에서
+  조문내용·항·호·목 CDATA만 추출해 줄 단위 unified diff. 메타데이터(조문키·
+  조문시행일자 태그)를 비교에서 빼야 문안이 같은 시행본이 '변경'으로 오판되지 않는다.
+  변경 시점 특정은 A~B 사이 시행본 이진탐색(왕복 log2(N)회, 10분 캐시 공유).
+  주의 — eflaw 연혁에는 같은 공포본(MST)이 조문별 단계 시행 때문에 여러 시행일자
+  행으로 반복 등장하며, MST의 XML은 미래 시행 조문 문안까지 포함한다. 따라서
+  '현행_문안_시작'의 시행본 시행일자보다 응답의 `이_조문의_시행일자`(조문시행일자
+  태그)가 실제 적용 시작일 기준이다.
 - **`law_addenda_search`**: `law` 원문(MST 단위) 응답의 `<부칙>` 섹션을 파싱
   (2026-08-26 실측: 소득세법 현행본에 `<부칙단위>` 114건 — 각각 `<부칙공포일자>`·
   `<부칙공포번호>`·`<부칙내용>`(CDATA) 보유. 시행령도 동일 구조, 208건). 공포번호는
@@ -218,9 +238,9 @@ NTS/OLTA의 법원판례와 **별도 DB**라 문서번호 체계도 다르고 �
 
 ---
 
-## 5. MCP 서버 노출 도구 요약 (현재 v5.3, `server_ext.py` 기준 15개)
+## 5. MCP 서버 노출 도구 요약 (현재 v5.4, `server_ext.py` 기준 17개)
 
-### 기본 6개 (`server.py`)
+### 기본 7개 (`server.py`)
 
 | 도구 | 소스 | 주요 파라미터 |
 |---|---|---|
@@ -230,8 +250,16 @@ NTS/OLTA의 법원판례와 **별도 DB**라 문서번호 체계도 다르고 �
 | `olta_collection_search` | OLTA | keyword, category, page, view_count, date_from/to(서버단), sort |
 | `olta_get_detail` | OLTA | category, doc_id |
 | `nts_and_olta_precedent_search` | 둘 다 | keyword, view_count, tax_type_filter |
+| `verify_citations` | 둘 다 | doc_nos(최대 10), search_local_tax — 문서번호 실존 일괄 검증 (v5.4) |
 
-### 확장 9개 (`server_ext.py`에서만, law.go.kr)
+`verify_citations` 매칭 규칙: 정규화(공백·하이픈 제거) 후 ① 완전일치 → ② **접미 일치**
+(6자 이상·숫자 포함). 접미로 한정하는 이유는 실무 축약이 앞쪽 기관명을 생략하는 형태
+("기획재정부 재산세제과-73" → "재산세제과-73")이기 때문이며, 이 규칙이 두 오탐을 동시에
+막는다 — "조심2023"처럼 연도까지만 있는 접두부 입력(그 해 아무 사건에나 매치), 그리고
+"재산세제과73"이 "…재산세제과732"에 걸리는 숫자 경계 문제. `nts_ruling_get_by_doc_no`도
+같은 정규화 기준으로 비교한다(v5.4 — 이전에는 원문 완전일치라 표기 변형이 부존재로 나갔음).
+
+### 확장 10개 (`server_ext.py`에서만, law.go.kr)
 
 | 도구 | target | 주요 파라미터 |
 |---|---|---|
@@ -240,12 +268,41 @@ NTS/OLTA의 법원판례와 **별도 DB**라 문서번호 체계도 다르고 �
 | `law_interpretation_search` | expc | keyword, display, serial |
 | `law_history_search` | law/eflaw | law_name, law_id, current_only |
 | `law_article_as_of` | eflaw→law | law_name, as_of_date, article_no, law_id |
+| `law_article_diff` | eflaw→law | law_name, article_no, date_from, date_to, law_id, max_chars, find_change (v5.4) |
 | `law_addenda_search` | law (부칙 섹션) | law_name/mst, law_id, as_of_date, promul_no, article_no, recent, max_chars |
 | `admin_rule_search` | admrul | keyword, serial, display |
 | `treaty_search` | trty | keyword, serial, display |
 | `ordinance_search` | ordin | keyword, region(클라단 필터), serial, display |
 
 전체 파라미터 설명은 `README.md`의 "도구 파라미터 참고" 참고.
+
+### 오류 응답 계약 (v5.4)
+
+모든 도구 응답에 `status` 필드가 붙는다 — 원천 장애를 '0건'과 구분하지 않으면
+LLM이 자료 부존재로 단정하는 사고가 나기 때문.
+
+| status | 의미 | LLM 해석 |
+|---|---|---|
+| `OK` | 정상, 결과 있음 | 그대로 사용 |
+| `NOT_FOUND` | 검색·조회는 성공, 결과 0건 | 자료 부존재로 판단 가능 |
+| `UPSTREAM_ERROR` | 원천 사이트 접속 실패 | **부존재 단정 금지**, 재시도 안내 |
+| `PARSE_ERROR` | 응답을 받았으나 구조 해석 실패(개편 의심) | **부존재 단정 금지**, 관리자 알림 |
+| `AUTH_ERROR` | law.go.kr 인증 실패(OC·IP 미등록) | 부존재와 무관, 관리자 확인 |
+| `INVALID_INPUT` | 입력 형식 오류 | 파라미터 수정 후 재호출 |
+
+OLTA 특수 처리: olta.re.kr의 0건 페이지는 결과 섹션(`p.se_title`) 자체가 없어
+단일 응답만으로 0건/구조변경을 구분할 수 없다 (2026-08-28 실측). 파싱 결과가
+비면 보증 키워드("취득세")로 **카나리 검색**을 1회 수행해(정상 판정 10분·실패
+판정 60초 캐시) 파서 생존이 확인될 때만 NOT_FOUND로 판정하고, 카나리도 실패하면
+PARSE_ERROR를 반환한다.
+
+### 파서 회귀 테스트 (v5.4, `tests/`)
+
+| 스크립트 | 역할 |
+|---|---|
+| `refresh_fixtures.py` | 세 원천의 실제 응답을 `fixtures/*.gz`로 캡처. 저장 전 민감정보 자동 스크러빙 — law.go.kr 검색 응답에 에코되는 OC 키, 그리고 NTS `debugMsg`에 담긴 **국세청 내부망 IP·포트**(사설 IP 대역 마스킹). 실제 도구 경로(`law_article_diff`·`law_article_as_of`)를 그대로 태워 캡처하므로 테스트가 요구하는 시행본이 빠짐없이 담기고, 기준일(`date_to`)을 manifest에 고정해 오프라인 테스트가 실행 날짜에 흔들리지 않는다 |
+| `test_parsers.py` | 픽스처만으로 파싱 로직 오프라인 검증 (16개 테스트, pytest 불필요). 절 첫 조문·가지조문·마지막 조문 부칙 혼입·공포번호 패딩·오류 계약 등 역대 버그를 회귀 커버 |
+| `compare_with_site.py` | 픽스처 캡처 때와 같은 검색을 라이브로 보내 구조 일치를 확인 — 사이트 개편 조기 경보 (주기 실행 권장, DRIFT 시 픽스처 갱신→파서 수정→오프라인 테스트) |
 
 ### 서버 모드
 - **stateful streamable-http** (`stateless_http=False`) — initialize 시 `Mcp-Session-Id` 헤더로
@@ -313,9 +370,8 @@ NTS/OLTA의 법원판례와 **별도 DB**라 문서번호 체계도 다르고 �
 
 ### 축 1 — 법령 리서치 심화 (기존 law.go.kr 키로 가능, 새 인증 불필요)
 
-1. **조문 개정 diff(신구조문 대비)** — 새 소스 불필요. 연혁 시행본을 이진탐색으로
-   훑어 특정 조문이 바뀐 시점을 찾고 전후 diff 반환. 부칙 도구와 짝
-   (뭐가 바뀌었나 + 언제부터 적용되나). 10분 캐시 공유로 API 부담 거의 없음. **가성비 1순위.**
+1. ~~**조문 개정 diff(신구조문 대비)**~~ → **완료 (v5.4, 2026-08-28).**
+   `law_article_diff` 도구로 구현 — 이진탐색 변경 시점 특정 + 부칙 연결까지 반영.
 2. law.go.kr 추가 target: 별표서식 본문(기준경비율표·세율표류), 조항호목 단위
    조회, 영문법령. 법-령-규칙 3단비교는 Open API 제공 여부 실측 필요.
 3. 기재부 세법개정안 자료 — 보도자료 스크래핑 + PDF 파싱. 시즌성(매년 7~8월 발표,

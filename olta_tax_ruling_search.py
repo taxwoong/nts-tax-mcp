@@ -83,7 +83,18 @@ SORT_OPTIONS = {
 DEFAULT_CACHE_TTL = 300
 DEFAULT_MIN_INTERVAL = 0.5
 
+# 0건 판별용 카나리 키워드 — 이 검색은 항상 결과가 있어야 정상.
+# olta.re.kr 0건 페이지는 결과 섹션(p.se_title) 자체가 없어서, 파싱 결과가 비었을 때
+# "진짜 0건"인지 "사이트 개편으로 파서가 깨진 것"인지 응답만으로는 구분할 수 없다
+# (2026-08-28 실측). 파싱이 비면 카나리 검색으로 파서 생존을 확인한다.
+CANARY_KEYWORD = "취득세"
+
 _META_PATTERN = re.compile(r"^(?P<case_no>.*?)\((?P<date>\d{4}[.\-]?\d{2}[.\-]?\d{2}|\d{8})\)\s*$")
+
+
+class OltaParseError(Exception):
+    """응답은 받았으나 검색결과 구조를 해석하지 못함 — 사이트 개편 가능성.
+    '검색 결과 0건'과 반드시 구분해야 한다."""
 
 
 class OltaTaxLawClient:
@@ -107,6 +118,29 @@ class OltaTaxLawClient:
 
         self._min_request_interval = min_request_interval
         self._last_request_ts = 0.0
+        self._canary = None  # (검사시각, 정상여부)
+
+    def _canary_ok(self, trust_cached_success: bool = True) -> bool:
+        """파서 생존 확인 — 항상 결과가 있어야 하는 키워드로 파싱이 되는지 검사.
+        정상 판정은 10분, 실패 판정은 60초 캐시 (일시 장애가 오래 눌러붙지 않게).
+
+        trust_cached_success=False면 캐시된 성공 판정을 믿지 않고 즉시 재검사한다 —
+        빈 파싱 결과를 판정할 때는 그 사이 사이트가 바뀌었을 수 있으므로 필수."""
+        now = time.time()
+        if self._canary:
+            ts, ok = self._canary
+            if not ok and now - ts < 60:
+                return False
+            if ok and trust_cached_success and now - ts < 600:
+                return True
+        try:
+            html = self._post_search(CANARY_KEYWORD)
+            ok = bool(self._parse(html))
+        except Exception as e:  # noqa: BLE001 — 카나리 실패는 '판정 불가'로만 쓰인다
+            logger.warning("카나리 검사 실패: %s", e)
+            ok = False
+        self._canary = (now, ok)
+        return ok
 
     def _bootstrap(self, force: bool = False):
         if force:
@@ -184,17 +218,31 @@ class OltaTaxLawClient:
             use_cache: 캐시 사용 여부
         """
         cache_key = None
+        cached_hit = False
         if use_cache:
             cache_key = self._cache_key(keyword=keyword, categories=categories, view_count=view_count)
             cached = self._cache.get(cache_key)
             if cached and (time.time() - cached[0]) < self._cache_ttl:
                 logger.info("캐시된 결과 반환: %s", keyword)
-                result = cached[1]
+                result, cached_hit = cached[1], True
             else:
                 result = self._search_uncached(keyword)
-                self._cache[cache_key] = (time.time(), result)
         else:
             result = self._search_uncached(keyword)
+
+        # 카테고리 헤더가 하나도 파싱되지 않았으면 '0건'인지 '파서 파손'인지 카나리로 판별.
+        # 빈 결과는 카나리 통과 전에는 캐시하지 않는다 — 파서가 깨진 동안 저장된 빈 결과가
+        # 회복 후에도 TTL 동안 '정상 0건'으로 서빙되는 것을 막기 위함
+        if not result:
+            if not self._canary_ok(trust_cached_success=False):
+                if cache_key:
+                    self._cache.pop(cache_key, None)
+                raise OltaParseError(
+                    "지방세법령정보시스템 검색결과를 해석하지 못함 — 카나리 검색"
+                    f"('{CANARY_KEYWORD}')도 파싱 실패. 사이트 구조 변경 가능성이 높음"
+                )
+        if cache_key and not cached_hit:
+            self._cache[cache_key] = (time.time(), result)
 
         # 카테고리 필터
         if categories:
@@ -218,12 +266,15 @@ class OltaTaxLawClient:
         for v in result.values():
             v["items"] = v["items"][:view_count]
 
-        total = sum(v.get("total_count", 0) for v in result.values())
+        total = sum(v.get("total_count", 0) for v in result.values() if isinstance(v, dict))
         if total == 0:
+            result["status"] = "NOT_FOUND"
             result["_guidance"] = (
-                f"'{keyword}'에 대한 검색 결과가 없습니다. 검색어를 더 짧게 바꾸거나 "
-                "동의어로 다시 시도해 보세요."
+                f"'{keyword}'에 대한 검색 결과가 없습니다 (검색 자체는 정상 수행됨). "
+                "검색어를 더 짧게 바꾸거나 동의어로 다시 시도해 보세요."
             )
+        else:
+            result["status"] = "OK"
 
         return result
 
@@ -293,6 +344,11 @@ class OltaTaxLawClient:
         resp.encoding = "utf-8"
 
         parsed = self._parse(resp.text)
+        if not parsed and not self._canary_ok(trust_cached_success=False):
+            raise OltaParseError(
+                "지방세법령정보시스템 카테고리 검색결과를 해석하지 못함 — 카나리 검색"
+                f"('{CANARY_KEYWORD}')도 파싱 실패. 사이트 구조 변경 가능성이 높음"
+            )
         # 컬렉션 지정 검색이므로 해당 카테고리만 반환됨 (혹은 이름이 매칭되는 것)
         data = parsed.get(category)
         if data is None:
@@ -301,6 +357,7 @@ class OltaTaxLawClient:
 
         data["items"] = data.get("items", [])[:view_count]
         data["page"] = page
+        data["status"] = "OK" if (data.get("items") or data.get("total_count", 0) > 0) else "NOT_FOUND"
         return data
 
     def get_detail(self, category: str, doc_id: str) -> dict:
@@ -314,6 +371,7 @@ class OltaTaxLawClient:
         pattern = DETAIL_URL_PATTERNS.get(category)
         if pattern is None:
             return {
+                "status": "INVALID_INPUT",
                 "found": False,
                 "message": (
                     f"'{category}' 카테고리는 본문 조회를 지원하지 않습니다 "
@@ -336,9 +394,15 @@ class OltaTaxLawClient:
         text = content_div.get_text("\n", strip=True) if content_div else ""
 
         if len(text) < 100:
-            return {"found": False, "message": "본문을 추출하지 못했습니다.", "url": url}
+            return {
+                "status": "NOT_FOUND",
+                "found": False,
+                "message": ("본문을 추출하지 못했습니다 — doc_id가 유효하지 않거나(재검색으로 "
+                            "최신 doc_id 확인 권장), 드물게 상세 페이지 구조가 바뀐 경우입니다."),
+                "url": url,
+            }
 
-        return {"found": True, "url": url, "content": text}
+        return {"status": "OK", "found": True, "url": url, "content": text}
 
     def _search_uncached(self, keyword: str) -> dict:
         html = self._post_search(keyword)

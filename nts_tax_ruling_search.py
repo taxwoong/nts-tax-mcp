@@ -28,6 +28,10 @@ from typing import Optional
 
 import requests
 
+# 문서번호 정규화는 두 시스템 공통 규칙 — 한 곳에서만 정의한다
+# (olta 모듈은 이 모듈을 import하지 않으므로 순환 없음)
+from olta_tax_ruling_search import normalize_doc_no
+
 logger = logging.getLogger("nts_tax_ruling_search")
 if not logger.handlers:
     handler = logging.StreamHandler()
@@ -88,6 +92,11 @@ TAX_TYPE_CODES = {
 
 DEFAULT_CACHE_TTL = 300
 DEFAULT_MIN_INTERVAL = 0.5
+
+
+class NtsParseError(Exception):
+    """응답은 받았으나 예상한 구조가 아님 — 사이트 개편 가능성.
+    '검색 결과 0건'과 반드시 구분해야 한다 (0건으로 오인하면 LLM이 자료 부존재로 단정)."""
 
 
 class NtsTaxLawClient:
@@ -299,18 +308,22 @@ class NtsTaxLawClient:
                 use_cache=True,
             )
 
+            # 표기 차이(하이픈·띄어쓰기)로 실존 문서를 놓치면 status NOT_FOUND가
+            # '자료 부존재'로 해석되므로, verify_citations와 같은 정규화 기준으로 비교한다
+            want = normalize_doc_no(doc_no)
             matched = []
             for coll_name, coll_data in result.items():
-                if coll_name == "_guidance":
+                if not isinstance(coll_data, dict):  # status·_guidance 등 메타 키 스킵
                     continue
                 for item in coll_data.get("items", []):
-                    if item.get("doc_no") == doc_no:
+                    if item.get("doc_no") and normalize_doc_no(item["doc_no"]) == want:
                         matched.append(item)
 
             if matched:
-                return {"found": True, "items": matched}
+                return {"status": "OK", "found": True, "items": matched}
 
         return {
+            "status": "NOT_FOUND",
             "found": False,
             "items": [],
             "message": (
@@ -325,7 +338,10 @@ class NtsTaxLawClient:
             srv = raw["data"]["ASEISA001MR01"]["searchResultVO"]
         except (KeyError, TypeError) as e:
             logger.error("예상치 못한 응답 구조입니다: %s / raw keys=%s", e, list(raw.keys()))
-            return {"error": "예상치 못한 응답 구조", "raw_status": raw.get("status")}
+            raise NtsParseError(
+                f"국세법령정보시스템 응답 구조가 예상과 다름 (누락 경로: {e}, "
+                f"raw keys={list(raw.keys())}, status={raw.get('status')}) — 사이트 개편 가능성"
+            ) from e
 
         result = {}
         for coll in srv.get("collectionList", []):
@@ -410,16 +426,32 @@ class NtsTaxLawClient:
 
     @staticmethod
     def _attach_guidance(result: dict, keyword: str) -> dict:
-        total = sum(
-            v.get("total_count", 0) for k, v in result.items() if isinstance(v, dict) and "total_count" in v
-        )
+        """검색 완료 후 status 계약을 붙인다.
+        OK = 결과 있음 / NOT_FOUND = 검색은 성공했고 결과가 0건 (자료 부존재로 판단 가능).
+        원천 접근·파싱 실패는 여기 오지 않고 예외로 전파된다 (UPSTREAM/PARSE_ERROR)."""
+        colls = [v for v in result.values() if isinstance(v, dict) and "total_count" in v]
+        total = sum(v.get("total_count", 0) for v in colls)
         if total == 0:
+            result["status"] = "NOT_FOUND"
             result["_guidance"] = (
-                f"'{keyword}'에 대한 검색 결과가 없습니다. "
+                f"'{keyword}'에 대한 검색 결과가 없습니다 (검색 자체는 정상 수행됨). "
                 "검색어를 더 짧게(핵심 단어 위주로) 바꾸거나, "
                 "동의어·유사 표현으로 다시 시도해 보세요. "
                 "특정 컬렉션만 지정했다면 collections를 비워 전체 범위로 검색해 보는 것도 방법입니다."
             )
+        else:
+            result["status"] = "OK"
+            # 기간·세목 필터는 클라이언트단 후처리라, 서버가 준 상위 N건이 전부 걸러지면
+            # items가 비어도 total_count는 그대로다 — '그 조건의 자료가 없다'는 뜻이 아님을 명시
+            if not any(v.get("items") for v in colls):
+                applied = [k for k in ("filtered_by_date", "filtered_by_tax_type")
+                           if any(k in v for v in colls)]
+                if applied:
+                    result["_guidance"] = (
+                        f"서버 검색 결과는 총 {total}건이지만 클라이언트단 필터({', '.join(applied)})로 "
+                        "가져온 상위 건이 모두 걸러졌습니다 — 해당 조건의 자료가 없다는 뜻이 "
+                        "아닙니다. sort='date_desc'로 바꾸거나 view_count를 늘려 다시 조회하세요."
+                    )
         return result
 
 

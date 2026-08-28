@@ -1,0 +1,38 @@
+{
+  "captured_at": "2026-08-28 15:12:51",
+  "nts": {
+    "keyword": "조정대상지역",
+    "collections": [
+      "question",
+      "precedent"
+    ],
+    "empty_keyword": "zzqq없는검색어xx991122"
+  },
+  "olta": {
+    "keyword": "취득세",
+    "empty_keyword": "zzqq없는검색어xx991122"
+  },
+  "law": {
+    "law_name": "소득세법",
+    "law_id": "001565",
+    "mst_current": "280405",
+    "current_시행일자": "20260701",
+    "mst_old": "212777",
+    "old_시행일자": "20200101",
+    "old_date": "20200101",
+    "date_to": "20260828",
+    "eflaw_pages": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "history_rows": 224,
+    "history_first_date": "19490715"
+  }
+}

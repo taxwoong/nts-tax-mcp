@@ -74,4 +74,4 @@ try {
   }
 }
 Write-Host ""
-Write-Host "다음: 브라우저에서 https://desktop-ika1349.tail81ecba.ts.net/mcp 열어 영문 오류문구(=성공) 확인" -ForegroundColor Cyan
+Write-Host "다음: tailscale funnel status 로 확인한 https://<이 컴퓨터의 tailnet 주소>/mcp 를 브라우저에서 열어 영문 오류문구(=성공) 확인" -ForegroundColor Cyan
