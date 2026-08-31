@@ -1,0 +1,22 @@
+name: 사용 질문 / Question
+description: 설치·커넥터 등록·검색이 안 될 때, 또는 사용법 문의
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        먼저 README의 [문제가 생겼을 때](https://github.com/taxwoong/nts-tax-mcp#문제가-생겼을-때)와
+        `python test_mcp_client.py --url <내-서버>/mcp` 결과를 확인해 보세요.
+        그래도 막히면 편하게 물어보시면 됩니다.
+  - type: textarea
+    id: question
+    attributes:
+      label: 무엇이 막히셨나요
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: 이미 시도해 본 것
+      description: test_mcp_client.py 출력이 있으면 붙여주세요.
+      render: text

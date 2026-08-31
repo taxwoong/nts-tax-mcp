@@ -1,0 +1,61 @@
+name: 버그 신고 / Bug report
+description: 도구가 오동작하거나, 응답이 이상하거나, 파싱이 깨졌을 때
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        원천 사이트(taxlaw.nts.go.kr · olta.re.kr · law.go.kr) 개편으로 파싱이 조용히
+        깨질 수 있습니다. 이상하다 싶으면 확신이 없어도 올려주세요.
+  - type: dropdown
+    id: tool
+    attributes:
+      label: 어느 도구인가요
+      options:
+        - nts_ruling_search
+        - nts_ruling_get_by_doc_no
+        - olta_ruling_search
+        - olta_collection_search
+        - olta_get_detail
+        - nts_and_olta_precedent_search
+        - verify_citations
+        - court_case_search / court_case_detail
+        - law_interpretation_search
+        - law_history_search
+        - law_article_as_of
+        - law_article_diff
+        - law_addenda_search
+        - admin_rule_search
+        - treaty_search
+        - ordinance_search
+        - 서버 기동 / 커넥터 연결 자체
+        - 잘 모르겠음
+    validations:
+      required: true
+  - type: textarea
+    id: params
+    attributes:
+      label: 넘긴 파라미터
+      description: 값 그대로 붙여주세요 (예 - law_name="소득세법", article_no="104", as_of_date="20200101")
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: status
+    attributes:
+      label: 응답의 status 값
+      description: "OK / NOT_FOUND / UPSTREAM_ERROR / PARSE_ERROR / AUTH_ERROR / INVALID_INPUT"
+      placeholder: 예 - NOT_FOUND
+  - type: textarea
+    id: expected
+    attributes:
+      label: 기대한 결과 vs 실제 결과
+      description: 원천 사이트에서 직접 확인한 값이 있으면 함께 적어주시면 원인 파악이 훨씬 빠릅니다.
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: 실행 환경
+      description: "진입점(server.py / server_ext.py), 파이썬 버전, OS, LAW_API_OC 설정 여부"
+      placeholder: "server_ext.py, Python 3.12, Windows 11, LAW_API_OC 설정함(IP 등록 완료)"

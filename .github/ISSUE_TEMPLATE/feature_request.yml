@@ -1,0 +1,16 @@
+name: 기능 제안 / Feature request
+description: 추가로 검색하고 싶은 자료원이나 도구 아이디어
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: 어떤 상황에서 필요한가요
+      description: 실제로 찾다가 막힌 자료(기관·문서 종류)가 있으면 구체적으로 적어주세요.
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: 자료원 URL
+      description: 해당 자료를 제공하는 사이트나 Open API가 있으면 링크를 남겨주세요.
