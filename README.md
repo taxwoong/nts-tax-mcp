@@ -2,12 +2,12 @@
 
 **한국 세법·법령 통합 검색 MCP 서버.** 국세청 국세법령정보시스템(taxlaw.nts.go.kr),
 지방세법령정보시스템(olta.re.kr), 법제처 국가법령정보센터(law.go.kr)를 하나의 커넥터로
-묶어 **도구 17개**로 검색합니다. 심판례·판례·질의회신·법령 조문·부칙·조문 개정 diff까지
+묶어 **도구 18개**로 검색합니다. 심판례·판례·질의회신·법령 조문·부칙·조문 개정 diff까지
 Claude 채팅에서 바로 조회하고, 인용한 문서번호의 실존 여부까지 검증합니다.
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![MCP](https://img.shields.io/badge/MCP-streamable--http-black)
-![tools](https://img.shields.io/badge/tools-17-brightgreen)
+![tools](https://img.shields.io/badge/tools-18-brightgreen)
 ![status](https://img.shields.io/badge/version-v5.4-informational)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -38,19 +38,20 @@ python server_ext.py          # http://0.0.0.0:8000/mcp (포트는 PORT 환경�
   IP에서만** 동작하므로 서버 공인 IP를 사전 등록해야 합니다. 미설정 시 법령정보 도구만
   `AUTH_ERROR`를 반환하고 나머지 7개는 정상 동작합니다.
 
-## 제공 도구 (17개)
+## 제공 도구 (18개)
 
-실제 운영 서버는 `server_ext.py`로 구동되어 17개가 모두 열려 있습니다.
+실제 운영 서버는 `server_ext.py`로 구동되어 18개가 모두 열려 있습니다.
 모든 응답에는 `status` 필드가 포함됩니다 — `OK` / `NOT_FOUND`(결과 없음, **부존재 판단 가능**)
 / `UPSTREAM_ERROR`·`PARSE_ERROR`(원천 접근·해석 실패, **부존재 단정 금지**) / `AUTH_ERROR` /
 `INVALID_INPUT`. 파라미터 상세는 [도구 파라미터 참고](#도구-파라미터-참고)에 있습니다.
 
-### 기본 7개 (국세·지방세, `server.py`)
+### 기본 8개 (국세·지방세, `server.py`)
 
 | 도구 | 용도 |
 |---|---|
 | `nts_ruling_search` | 국세 통합검색 (세목명이 정확하면 서버측 세목필터 자동 적용) |
-| `nts_ruling_get_by_doc_no` | 국세 문서 사건번호로 직접 조회 |
+| `nts_ruling_get_by_doc_no` | 국세 문서 사건번호로 직접 조회 (요지·스니펫) |
+| `nts_ruling_get_full_text` | **결정문·판결문 전문 조회** — 붙임 HWP를 받아 본문 텍스트로 반환 (v5.5) |
 | `olta_ruling_search` | 지방세 통합검색 (전체 카테고리 미리보기, 카테고리당 3건) |
 | `olta_collection_search` | 지방세 특정 카테고리 깊은 탐색 — 페이지네이션·기간·최신순 정렬 (서버측) |
 | `olta_get_detail` | 지방세 문서 본문 전문 조회 (조세심판원·헌재 지원) |
@@ -98,7 +99,7 @@ Claude 채팅에서 자연어로 물어보면 됩니다.
 pip install -r requirements.txt
 
 python server.py         # 기본 7개 (국세·지방세) — 키 불필요
-python server_ext.py     # 17개 (기본 7개 + 법제처 10개) — LAW_API_OC 필요
+python server_ext.py     # 18개 (기본 8개 + 법제처 10개) — LAW_API_OC 필요
 ```
 
 기본적으로 `http://0.0.0.0:8000/mcp` 에서 streamable-http 방식으로 서비스됩니다.
@@ -128,7 +129,7 @@ PORT=8765 python server_ext.py
 ### 서버컴퓨터 상시 구동 + Tailscale Funnel (현재 운영 방식, 2026-08~)
 
 Railway 크레딧 소진으로 서버가 다운된 뒤(2026-08-08), 자체 서버컴퓨터에서 상시 구동하는
-방식으로 전환했습니다. 17개 도구(`server_ext.py`)가 이 방식으로 운영됩니다.
+방식으로 전환했습니다. 18개 도구(`server_ext.py`)가 이 방식으로 운영됩니다.
 
 1. 서버컴퓨터 관리자 PowerShell에서 `setup.ps1` 1회 실행 — GitHub에서 소스를 받아
    의존성을 설치하고, Windows 작업 스케줄러에 `nts-tax-mcp`(부팅 시 SYSTEM 권한 자동 실행)를
@@ -228,8 +229,8 @@ python nts_search.py "조정대상지역" -c precedent -n 10
 
 ```
 nts-tax-mcp/
-├── server.py                    # MCP 서버 본체 (FastMCP) — 기본 도구 7개 (국세+지방세+인용검증)
-├── server_ext.py                # 확장 진입점 — server.py 7개 + 법제처 10개 = 17개 도구
+├── server.py                    # MCP 서버 본체 (FastMCP) — 기본 도구 8개 (국세+지방세+인용검증)
+├── server_ext.py                # 확장 진입점 — server.py 8개 + 법제처 10개 = 18개 도구
 ├── nts_tax_ruling_search.py     # 국세: taxlaw.nts.go.kr 검색 클라이언트
 ├── olta_tax_ruling_search.py    # 지방세: olta.re.kr 검색 클라이언트
 ├── law_go_kr.py                 # 법령정보: law.go.kr Open API 클라이언트 (판례/법령/해석례/행정규칙/조약/자치법규)
@@ -262,17 +263,45 @@ nts-tax-mcp/
 | `keyword` | 검색어 (필수) |
 | `collections` | 검색 범위 제한. 생략시 전체.<br>`form`(별표서식), `statute`(법령), `ruling`(사전답변·서면질의·질의회신), `precedent`(심판·심사·판례), `old_ruling`(구 법령해석자료), `intl`(국제조세 해설), `hometax`(홈택스 상담사례) |
 | `page` | 페이지 번호 (1부터 시작) |
-| `view_count` | 컬렉션별로 가져올 결과 개수 (기본 20) |
+| `view_count` | 컬렉션별로 가져올 결과 개수 (**기본 5**, v5.5에서 20→5). 컬렉션 7개에 곱해지므로 20이면 최대 140건 |
 | `date_from` / `date_to` | 검색 기간 (YYYYMMDD) |
 | `sort` | `relevance`(정확도순, 기본) / `date_desc`(최신순) / `date_asc`(오래된순) |
 | `tax_type_filter` | 세목명에 이 문자열이 포함된 것만 남김 (예: "양도소득세") |
-| `include_full_text` | `false`면 본문 생략, 요약(`summary`)만 반환 |
+| `include_full_text` | **기본 `false`** (v5.5에서 뒤집음). `true`로 줘도 얻는 건 전문이 아니라 검색어 주변 500~900자 스니펫이다 — 전문은 `nts_ruling_get_full_text`로 조회 |
 
 ### `nts_ruling_get_by_doc_no`
 
 | 파라미터 | 설명 |
 |---|---|
 | `doc_no` | 사건번호/문서번호. 예: `조심-2023-서-9465`, `서면-2019-법규재산-4276`, `기획재정부 재산세제과-73` |
+
+여기서 나오는 `content`/`detail_content`는 전문이 아니라 검색 스니펫입니다
+(심판·심사의 `content`는 `"결정내용은 붙임과 같습니다."` 상수).
+전문은 아래 `nts_ruling_get_full_text`로 조회하세요.
+
+### `nts_ruling_get_full_text` (전문 조회, v5.5)
+
+| 파라미터 | 설명 |
+|---|---|
+| `doc_no` | 사건번호/문서번호. 예: `조심-2026-서-1112`, `사전-2026-법규법인-0502` |
+| `max_chars` | 본문 최대 길이 (기본 30000). 전문은 보통 2천~2만 자 |
+| `start_char` | 본문 시작 오프셋 — 잘린 뒷부분을 이어 읽을 때. 응답의 `잘림` 안내가 다음 값을 알려줌 |
+
+검색 API는 본문을 주지 않습니다 — 심판·심사는 `"결정내용은 붙임과 같습니다."`만 나오고,
+`include_full_text=true`로 얻는 `detail_content`도 검색어 주변 500~900자 스니펫입니다.
+**결정 이유·처분개요·청구주장·사실관계는 전부 붙임 HWP 안에** 있습니다.
+이 도구가 붙임을 받아 텍스트로 변환해 돌려줍니다.
+
+| 문서 종류 | 읽을 수 있는 것 |
+|---|---|
+| 심판·심사 | 주문 / 처분개요 / 청구주장 / 처분청 의견 / 심리 및 판단(쟁점·관련법령·판단) |
+| 판례 | 사건·당사자 / 청구취지 / 이유 / 판단 |
+| 사전답변·질의회신 | 1. 사실관계 / 2. 질의내용 / 3. 회신 |
+
+붙임은 HWP 5.0 형식이며 `hwp_text.py`(의존성은 `olefile` 하나)가 파싱합니다.
+표 안의 글자도 함께 추출되지만 행·열 구조는 복원되지 않습니다.
+붙임이 HWP가 아닌 문서(PDF 등)는 `status=PARSE_ERROR`와 함께 형식을 알려줍니다 —
+**자료 부존재가 아닙니다.**
 
 ### `verify_citations` (인용 검증, v5.4)
 
@@ -299,10 +328,11 @@ nts-tax-mcp/
 | 파라미터 | 설명 |
 |---|---|
 | `keyword` | 검색어 (필수) |
-| `view_count` | 각 소스에서 가져올 결과 개수 (기본 20) |
+| `view_count` | 각 소스에서 가져올 결과 개수 (**기본 5**, v5.5에서 20→5) |
 | `tax_type_filter` | 세목 필터 |
 
-반환값에 `nts_precedent`, `olta_precedent`, `duplicates_removed`(실제 제외된 중복 건수)가 포함됩니다.
+반환값에 `nts_precedent`, `olta_precedent`, `duplicates_removed`(국세 결과와 겹쳐
+제외된 지방세 항목 수 — `view_count`로 자르기 전 기준, v5.5에서 정확해짐)가 포함됩니다.
 
 ### `olta_collection_search` (지방세 심층 탐색)
 

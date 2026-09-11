@@ -2,3 +2,5 @@
 mcp[cli]>=1.2.0,<2.0.0
 requests>=2.31.0
 beautifulsoup4>=4.12.0
+# 심판례·판례 붙임(HWP 5.0) 본문 추출용 — 순수 파이썬, 무의존 (hwp_text.py)
+olefile>=0.46

@@ -449,6 +449,177 @@ def test_split_addendum_and_effective_summary():
     assert "시행한다" in summary and "제57조의2" in summary, f"호별 시행일 요약 누락: {summary}"
 
 
+def test_olta_exclude_reports_count_without_second_search():
+    """중복 건수를 세려고 같은 검색을 또 돌리면 안 된다 — 클라이언트가 세어 돌려준다."""
+    from olta_tax_ruling_search import OltaTaxLawClient
+
+    client = OltaTaxLawClient()
+    calls = []
+
+    def _fake_uncached(keyword):
+        calls.append(keyword)
+        return {
+            "tax_tribunal": {"total_count": 3, "items": [
+                {"doc_no": "조심2026지0284", "tax_type": "취득세"},
+                {"doc_no": "조심-2025-인-2268", "tax_type": "취득세"},  # 국세측과 중복
+            ]},
+            "court": {"total_count": 1, "items": [
+                {"doc_no": "조심-2025-인-2268", "tax_type": "취득세"},  # 중복
+            ]},
+        }
+
+    client._search_uncached = _fake_uncached
+    result = client.search(
+        keyword="취득세", categories=["tax_tribunal", "court"], view_count=20,
+        exclude_doc_nos={"조심-2025-인-2268"},
+    )
+    assert result["excluded_count"] == 2, f"제외 건수 오답: {result.get('excluded_count')}"
+    assert len(calls) == 1, f"검색을 {len(calls)}번 호출했다 — 1번이어야 한다"
+    assert [it["doc_no"] for it in result["tax_tribunal"]["items"]] == ["조심2026지0284"]
+    assert result["court"]["items"] == []
+
+
+def test_olta_search_without_exclude_has_no_count_key():
+    """일반 검색 응답에는 excluded_count가 붙지 않아야 한다 (응답 계약 유지)."""
+    from olta_tax_ruling_search import OltaTaxLawClient
+
+    client = OltaTaxLawClient()
+    client._search_uncached = lambda kw: {
+        "tax_tribunal": {"total_count": 1, "items": [{"doc_no": "조심2026지0284"}]},
+    }
+    result = client.search(keyword="취득세", view_count=20)
+    assert "excluded_count" not in result, "제외 필터를 안 썼는데 키가 붙었다"
+
+
+# ---------------------------------------------------------------------------
+# 응답 총량 상한
+# ---------------------------------------------------------------------------
+
+def test_cap_response_trims_and_keeps_one_per_collection():
+    """상한을 넘으면 뒤에서부터 덜어내되, 컬렉션마다 최소 1건은 남겨야 한다."""
+    from server import _cap_response, _response_size
+
+    def _big(n):
+        return {"name_kr": "심판·심사·판례", "total_count": 999,
+                "items": [{"title": "제목 " + "가" * 200, "doc_no": f"조심-2026-서-{i}"}
+                          for i in range(n)]}
+
+    result = {"precedent": _big(40), "question": _big(40)}
+    assert _response_size(result) > 5000
+    out = _cap_response(result, cap=5000)
+    assert _response_size(out) <= 5000, f"상한 초과: {_response_size(out)}"
+    assert out["precedent"]["items"] and out["question"]["items"], "컬렉션이 통째로 비었다"
+    assert "_잘림" in out and "page" in out["_잘림"], f"잘림 안내 누락: {out.get('_잘림')}"
+    # total_count는 생략 전 기준 그대로여야 한다 (건수를 0으로 오해하면 안 됨)
+    assert out["precedent"]["total_count"] == 999
+
+
+def test_cap_response_leaves_small_responses_untouched():
+    """기본값 응답(1만 자 안쪽)은 손대지 않는다."""
+    from server import _cap_response
+
+    result = {"precedent": {"total_count": 3,
+                            "items": [{"title": "가", "doc_no": "조심-2026-서-1"}]}}
+    out = _cap_response(result, cap=30000)
+    assert out == result and "_잘림" not in out
+
+
+def test_cap_response_reaches_nested_collections():
+    """통합검색은 olta 카테고리가 한 단계 안쪽에 있다 — 못 찾으면 상한이 무력해진다."""
+    from server import _cap_response, _response_size
+
+    items = [{"title": "제목 " + "나" * 200, "doc_no": f"조심2026지{i}"} for i in range(40)]
+    result = {"status": "OK",
+              "nts_precedent": {"total_count": 9, "items": list(items)},
+              "olta_precedent": {"tax_tribunal": {"total_count": 9, "items": list(items)},
+                                 "court": {"total_count": 9, "items": list(items)}}}
+    out = _cap_response(result, cap=6000)
+    assert _response_size(out) <= 6000, f"중첩 컬렉션 미도달: {_response_size(out)}"
+    assert out["olta_precedent"]["tax_tribunal"]["items"], "중첩 컬렉션이 통째로 비었다"
+
+
+# ---------------------------------------------------------------------------
+# 붙임 전문 (HWP 5.0) — hwp_text.py 레코드 파서
+#
+# 붙임 실물(HWP 170~290KB)을 픽스처로 두는 대신, 깨지기 쉬운 부분인
+# 레코드 헤더·제어문자 폭 계산을 합성 바이트로 직접 검증한다.
+# ---------------------------------------------------------------------------
+
+def _hwp_record(tag: int, payload: bytes) -> bytes:
+    """레코드 헤더(tag|level|size) + 페이로드. size가 0xFFF 이상이면 확장 4바이트."""
+    import struct
+    if len(payload) >= 0xFFF:
+        header = (tag & 0x3FF) | (0xFFF << 20)
+        return struct.pack("<I", header) + struct.pack("<I", len(payload)) + payload
+    header = (tag & 0x3FF) | (len(payload) << 20)
+    return struct.pack("<I", header) + payload
+
+
+def _utf16(s: str) -> bytes:
+    return s.encode("utf-16-le")
+
+
+def _ctrl(code: int) -> bytes:
+    """인라인/확장 제어문자 1개 = 8워드(16바이트)"""
+    import struct
+    return struct.pack("<H", code) + bytes(12) + struct.pack("<H", code)
+
+
+def test_hwp_para_text_skips_control_chars():
+    """제어문자를 폭만큼 못 건너뛰면 본문에 쓰레기 글자가 섞인다."""
+    import struct
+    from hwp_text import _para_text
+
+    # 표 컨트롤(11=확장) 뒤에 본문이 이어지는 형태
+    data = _utf16("주문") + _ctrl(11) + _utf16("심판청구를 기각한다.")
+    assert _para_text(data) == "주문심판청구를 기각한다.", repr(_para_text(data))
+
+    # 인라인 컨트롤 중 탭(9)은 탭으로 살린다
+    data = _utf16("가.") + _ctrl(9) + _utf16("청구인")
+    assert _para_text(data) == "가.\t청구인", repr(_para_text(data))
+
+    # 줄바꿈(10)은 1워드만 차지한다 — 16바이트로 건너뛰면 뒤 글자가 잘려나간다
+    data = _utf16("첫줄") + struct.pack("<H", 10) + _utf16("둘째줄")
+    assert _para_text(data) == "첫줄\n둘째줄", repr(_para_text(data))
+
+
+def test_hwp_record_extended_size():
+    """4095바이트 넘는 문단은 확장 크기 헤더를 쓴다 — 못 읽으면 긴 결정문이 통째로 깨진다."""
+    from hwp_text import _iter_records, HWPTAG_PARA_TEXT
+
+    long_text = "가" * 3000  # 6000바이트 > 0xFFF
+    stream = (_hwp_record(HWPTAG_PARA_TEXT, _utf16("짧은 문단"))
+              + _hwp_record(HWPTAG_PARA_TEXT, _utf16(long_text)))
+    recs = list(_iter_records(stream))
+    assert len(recs) == 2, f"레코드 수 이상: {len(recs)}"
+    assert len(recs[1][1]) == 6000, f"확장 크기 오독: {len(recs[1][1])}"
+
+
+def test_hwp_rejects_non_ole_with_clear_message():
+    """PDF·HWPX 붙임을 조용히 빈 값으로 넘기면 '자료 없음'으로 오해된다."""
+    from hwp_text import extract_text, HwpExtractError
+
+    for blob, label in [(b"%PDF-1.7 ...", "PDF"), (b"PK\x03\x04 ...", "HWPX(zip)")]:
+        try:
+            extract_text(blob)
+        except HwpExtractError as e:
+            assert "HWP 5.0" in str(e), f"{label}: 안내 문구 누락 — {e}"
+        else:
+            raise AssertionError(f"{label}인데 예외가 나지 않았다")
+
+
+def test_nts_parse_exposes_file_id():
+    """붙임 파일 ID를 파서가 버리면 전문 조회 경로 자체가 막힌다."""
+    from nts_tax_ruling_search import NtsTaxLawClient
+    client = NtsTaxLawClient()
+    raw = json.loads(read_gz("nts_search.json.gz"))
+    result = client._parse(raw)
+    for coll in ("question", "precedent"):
+        item = result[coll]["items"][0]
+        assert item.get("file_id"), f"{coll}: file_id 누락 — {item}"
+        assert item["file_id"].isdigit(), f"{coll}: file_id 형식 이상 — {item['file_id']}"
+
+
 def _run_all():
     fns = [(name, fn) for name, fn in sorted(globals().items())
            if name.startswith("test_") and callable(fn)]

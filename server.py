@@ -19,6 +19,7 @@ nts_and_olta_precedent_search 도구는 문서번호 정규화 기반으로 중�
     환경변수 PORT 를 자동으로 읽어 바인딩합니다.
 """
 
+import json
 import logging
 import os
 import re
@@ -47,6 +48,10 @@ mcp = FastMCP(
         "사용하세요. 국세/지방세를 모두 아우르는 질문이면 nts_and_olta_precedent_search로 "
         "한 번에 검색하고 중복 없이 결과를 받을 수 있습니다. 답변 초안에 인용한 문서번호는 "
         "verify_citations로 실존 여부를 일괄 검증할 수 있습니다.\n"
+        "**검색 결과의 본문은 전문이 아니라 검색어 주변 스니펫입니다** — 심판·심사는 "
+        "'결정내용은 붙임과 같습니다.'만 나옵니다. 결정 이유·처분개요·청구주장·사실관계가 "
+        "필요하면 검색으로 문서번호를 찾은 뒤 nts_ruling_get_full_text로 전문을 읽으세요. "
+        "사실관계 비교나 쟁점 분석에는 요지만으로 결론을 내지 말고 반드시 전문을 확인해야 합니다.\n"
         "모든 도구 응답의 status 필드 해석: OK(정상) · NOT_FOUND(검색은 성공했고 결과 없음 — "
         "자료 부존재로 판단해도 됨) · UPSTREAM_ERROR/PARSE_ERROR(원천 사이트 접근·해석 실패 — "
         "자료가 없다고 절대 단정하지 말 것) · AUTH_ERROR(law.go.kr 인증 실패 — 부존재와 무관, "
@@ -88,6 +93,67 @@ def _tool_guard(fn, *args, **kwargs):
         return {"status": "UPSTREAM_ERROR", "오류": f"{type(e).__name__}: {e}",
                 "_guidance": _UPSTREAM_GUIDE}
 
+# ---------------------------------------------------------------------------
+# 응답 총량 상한
+#
+# 검색 응답은 대화 컨텍스트로 그대로 들어간다. 기본값(view_count=5, 본문 off)이면
+# 1만 자 안쪽이지만, view_count를 크게 올리면 컬렉션 수만큼 곱해져 수만 자가 된다.
+# 원천이 주는 순서대로 다 넘기는 대신 상한을 두고, 넘치면 뒤에서부터 덜어낸다.
+# ---------------------------------------------------------------------------
+_RESPONSE_CHAR_CAP = int(os.environ.get("NTS_RESPONSE_CHAR_CAP", "30000"))
+
+
+def _response_size(obj) -> int:
+    return len(json.dumps(obj, ensure_ascii=False, default=str))
+
+
+def _cap_response(result, cap: int = _RESPONSE_CHAR_CAP):
+    """컬렉션별 items를 한 건씩 덜어내 응답 총량을 cap 이하로 맞춘다."""
+    if not isinstance(result, dict) or _response_size(result) <= cap:
+        return result
+
+    # 컬렉션은 최상위(nts_ruling_search)에도 있고 한 단계 안쪽에도 있다
+    # (nts_and_olta_precedent_search의 olta_precedent 아래 카테고리별 묶음)
+    def _collect(node, depth=0):
+        found = []
+        if not isinstance(node, dict) or depth > 2:
+            return found
+        for v in node.values():
+            if not isinstance(v, dict):
+                continue
+            if isinstance(v.get("items"), list):
+                found.append(v)
+            else:
+                found.extend(_collect(v, depth + 1))
+        return found
+
+    colls = _collect(result)
+    if not colls:
+        return result
+
+    def _notice(n: int) -> str:
+        return (f"응답이 상한({cap:,}자)을 넘어 뒤쪽 {n}건을 생략했습니다. "
+                f"컬렉션별 총 건수(total_count)는 생략 전 기준 그대로입니다. "
+                f"더 보려면 page를 올리거나, collections로 범위를 좁혀 다시 조회하세요.")
+
+    # 안내 문구도 응답에 실리므로 그만큼 미리 빼둔다 — 안 그러면 상한을 넘겨 끝난다
+    budget = cap - len(_notice(9999)) - len('"_잘림": ,')
+
+    dropped = 0
+    # 항목이 가장 많은 컬렉션부터 떼어낸다 — 한 컬렉션만 통째로 날아가지 않도록.
+    # 컬렉션마다 최소 1건은 남긴다(무엇이 걸렸는지는 보여야 한다).
+    while _response_size(result) > budget:
+        target = max(colls, key=lambda c: len(c["items"]))
+        if len(target["items"]) <= 1:
+            break
+        target["items"].pop()
+        dropped += 1
+
+    if dropped:
+        result["_잘림"] = _notice(dropped)
+    return result
+
+
 # 클라이언트는 서버 프로세스 전역에서 재사용 (세션 쿠키·캐시 재사용을 위함)
 # 사내망/프록시 환경에서 인증서 오류가 나면 환경변수 *_VERIFY_SSL=false 로 임시 우회 가능
 _nts_verify_ssl = os.environ.get("NTS_VERIFY_SSL", "true").lower() != "false"
@@ -113,12 +179,12 @@ def nts_ruling_search(
     keyword: str,
     collections: Optional[list] = None,
     page: int = 1,
-    view_count: int = 20,
+    view_count: int = 5,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     sort: str = "relevance",
     tax_type_filter: Optional[str] = None,
-    include_full_text: bool = True,
+    include_full_text: bool = False,
 ) -> dict:
     """
     국세법령정보시스템 통합검색.
@@ -133,19 +199,25 @@ def nts_ruling_search(
             "ruling"(사전답변·서면질의·질의회신), "precedent"(심판·심사·판례),
             "old_ruling"(구 법령해석자료), "intl"(국제조세 해설), "hometax"(홈택스 상담사례)
         page: 페이지 번호 (1부터 시작). "더 보여줘" 같은 후속 요청시 2, 3...으로 증가
-        view_count: 컬렉션별로 가져올 결과 개수 (기본 20)
+        view_count: 컬렉션별로 가져올 결과 개수 (기본 5). 넓게 훑어야 할 때만 늘리세요 —
+            컬렉션 7개에 곱해지므로 20으로 올리면 최대 140건이 한 번에 돌아옵니다
         date_from: 검색 시작일 YYYYMMDD (선택)
         date_to: 검색 종료일 YYYYMMDD (선택)
         sort: "relevance"(정확도순, 기본) | "date_desc"(최신순) | "date_asc"(오래된순)
         tax_type_filter: 특정 세목만 보고 싶을 때 (예: "양도소득세", "부가가치세").
             결과의 세목명에 이 문자열이 포함된 것만 남깁니다.
-        include_full_text: False로 주면 본문 전문을 생략하고 요약만 반환해 응답을 가볍게 만듭니다.
-            대략적인 목록만 먼저 훑어보고 싶을 때 False로 호출한 뒤,
-            필요한 문서만 nts_ruling_get_by_doc_no로 본문을 확인하는 방식을 권장합니다.
+        include_full_text: True로 주면 content/detail_content를 함께 반환합니다(기본 False).
+            **이건 전문이 아니라 검색어 주변 500~900자 스니펫입니다** — 심판·심사의
+            content는 "결정내용은 붙임과 같습니다." 상수라 아무 정보가 없습니다.
+            켜면 응답이 두 배가 되지만 얻는 건 발췌뿐이므로 거의 켤 일이 없습니다.
+            전문이 필요하면 nts_ruling_get_full_text를 쓰세요.
 
     Returns:
-        컬렉션별 총 건수와 결과 목록(제목, 문서번호, 출처기관, 날짜, 세목, 요지, 본문 등).
+        컬렉션별 총 건수와 결과 목록(제목, 문서번호, 출처기관, 날짜, 세목, 요지, 붙임 파일 ID).
         검색 결과가 전혀 없으면 "_guidance" 키에 안내 메시지가 포함됩니다.
+
+    권장 흐름: 이 도구로 요지를 훑어 후보를 좁힌 뒤,
+    필요한 문서만 nts_ruling_get_full_text(문서번호)로 전문을 읽습니다.
     """
     collection_codes = None
     if collections:
@@ -158,7 +230,7 @@ def nts_ruling_search(
                             f"(가능: {list(COLLECTIONS.keys())})"}
         collection_codes = [COLLECTIONS[c] for c in collections]
 
-    return _tool_guard(
+    return _cap_response(_tool_guard(
         _client.search,
         keyword=keyword,
         collections=collection_codes,
@@ -169,7 +241,7 @@ def nts_ruling_search(
         sort=sort,
         tax_type_filter=tax_type_filter,
         include_full_text=include_full_text,
-    )
+    ))
 
 
 @mcp.tool()
@@ -188,10 +260,47 @@ def nts_ruling_get_by_doc_no(doc_no: str) -> dict:
 
     Returns:
         found: 일치하는 문서를 찾았는지 여부
-        items: 일치하는 문서 목록 (본문 포함)
+        items: 일치하는 문서 목록 (요지 + 검색 스니펫)
         message: 못 찾은 경우 안내 메시지
+
+    주의: 여기서 나오는 content/detail_content는 전문이 아니라 검색 스니펫입니다
+    (심판·심사의 content는 "결정내용은 붙임과 같습니다." 상수).
+    결정 이유·처분개요·청구주장·사실관계가 필요하면
+    nts_ruling_get_full_text를 사용하세요.
     """
     return _tool_guard(_client.get_by_doc_no, doc_no)
+
+
+@mcp.tool()
+def nts_ruling_get_full_text(doc_no: str, max_chars: int = 30000,
+                             start_char: int = 0) -> dict:
+    """
+    문서번호로 결정문·판결문 '전문'을 가져옵니다 (붙임 HWP 본문).
+
+    검색 도구(nts_ruling_search)가 주는 본문은 검색어 주변 500~900자 스니펫이고,
+    심판·심사는 아예 "결정내용은 붙임과 같습니다."만 나옵니다. 실제 결정 이유는
+    붙임 파일에 있으며, 이 도구가 그 붙임을 받아 텍스트로 변환해 돌려줍니다.
+
+    이런 걸 읽을 수 있습니다:
+        심판·심사 → 주문 / 처분개요 / 청구주장 / 처분청 의견 / 심리 및 판단(쟁점·관련법령·판단)
+        판례       → 사건·당사자 / 청구취지 / 이유 / 판단
+        사전답변·질의회신 → 1. 사실관계 / 2. 질의내용 / 3. 회신
+
+    사실관계나 판단 논리가 중요한 질문(유사 사례 비교, 쟁점 분석)에는 반드시 이
+    도구로 전문을 확인하세요. 검색 결과의 요지만으로 결론을 단정하면 안 됩니다.
+
+    Args:
+        doc_no: 사건번호/문서번호. 예: "조심-2026-서-1112", "사전-2026-법규법인-0502"
+        max_chars: 본문 최대 길이 (기본 30000). 전문은 보통 2천~2만 자입니다
+        start_char: 본문 시작 오프셋 — 잘린 뒷부분을 이어 읽을 때
+            응답의 "잘림" 안내가 다음 start_char 값을 알려줍니다
+
+    Returns:
+        문서번호·제목·종류·일자·세목·요지 + 전문(본문 텍스트) + 전문자수.
+        붙임이 없는 문서는 status=NOT_FOUND와 함께 요지만 반환합니다.
+        표 안의 글자는 함께 추출되지만 행·열 구조는 복원되지 않습니다.
+    """
+    return _tool_guard(_client.get_full_text, doc_no, max_chars, start_char)
 
 
 @mcp.tool()
@@ -246,7 +355,7 @@ def olta_ruling_search(
 @mcp.tool()
 def nts_and_olta_precedent_search(
     keyword: str,
-    view_count: int = 20,
+    view_count: int = 5,
     tax_type_filter: Optional[str] = None,
 ) -> dict:
     """
@@ -260,14 +369,17 @@ def nts_and_olta_precedent_search(
 
     Args:
         keyword: 검색어
-        view_count: 각 소스에서 가져올 결과 개수 (기본 20)
+        view_count: 각 소스에서 가져올 결과 개수 (기본 5). 국세 1개 + 지방세 4개
+            카테고리에 각각 곱해집니다. 국세측 본문 스니펫은 항상 생략되며,
+            전문이 필요하면 nts_ruling_get_full_text로 따로 조회하세요
         tax_type_filter: 세목 필터 (예: "양도소득세" 또는 "취득세")
 
     Returns:
         nts_precedent: 국세법령정보시스템의 심판·심사·판례 결과
         olta_precedent: 지방세법령정보시스템의 조세심판원·감사원·헌재·법원 결과
             (nts_precedent와 문서번호가 겹치는 항목은 제외됨)
-        duplicates_removed: 실제로 제외된 중복 건수
+        duplicates_removed: 국세 결과와 겹쳐 제외된 지방세 항목 수
+            (view_count로 자르기 전 기준 — 겹친 건수 전부를 셉니다)
     """
     def _impl():
         nts_result = _client.search(
@@ -287,18 +399,10 @@ def nts_and_olta_precedent_search(
             tax_type_filter=tax_type_filter,
             exclude_doc_nos=nts_doc_nos,
         )
-
-        # 실제 제외된 건수 계산을 위해 필터 전 개수와 비교
-        olta_result_unfiltered = _olta_client.search(
-            keyword=keyword,
-            categories=["tax_tribunal", "audit", "constitutional", "court"],
-            view_count=view_count,
-            tax_type_filter=tax_type_filter,
-        )
-        before = sum(len(v.get("items", []))
-                     for v in olta_result_unfiltered.values() if isinstance(v, dict))
-        after = sum(len(v.get("items", []))
-                    for v in olta_result.values() if isinstance(v, dict))
+        # 제외 건수는 olta 클라이언트가 세어 돌려준다 — 예전에는 이 숫자 하나 때문에
+        # 같은 검색을 한 번 더 돌렸다(대개 캐시에 맞았지만 TTL이 만료됐거나 빈 결과가
+        # 캐시되지 않은 경우엔 실제로 두 번 요청했다)
+        duplicates_removed = olta_result.pop("excluded_count", 0)
 
         nts_status = nts_result.get("status", "OK")
         olta_status = olta_result.get("status", "OK")
@@ -306,10 +410,10 @@ def nts_and_olta_precedent_search(
             "status": "OK" if "OK" in (nts_status, olta_status) else "NOT_FOUND",
             "nts_precedent": nts_result.get("precedent"),
             "olta_precedent": {k: v for k, v in olta_result.items()},
-            "duplicates_removed": before - after,
+            "duplicates_removed": duplicates_removed,
         }
 
-    return _tool_guard(_impl)
+    return _cap_response(_tool_guard(_impl))
 
 
 @mcp.tool()

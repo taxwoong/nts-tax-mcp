@@ -255,13 +255,17 @@ class OltaTaxLawClient:
             for v in result.values():
                 v["items"] = [it for it in v["items"] if it.get("tax_type") and tax_type_filter in it["tax_type"]]
 
+        excluded_count = None
         if exclude_doc_nos:
             normalized_exclude = {normalize_doc_no(d) for d in exclude_doc_nos}
+            excluded_count = 0
             for v in result.values():
-                v["items"] = [
+                kept = [
                     it for it in v["items"]
                     if normalize_doc_no(it.get("doc_no", "")) not in normalized_exclude
                 ]
+                excluded_count += len(v["items"]) - len(kept)
+                v["items"] = kept
 
         for v in result.values():
             v["items"] = v["items"][:view_count]
@@ -275,6 +279,11 @@ class OltaTaxLawClient:
             )
         else:
             result["status"] = "OK"
+
+        # 제외 건수는 호출자가 세려고 같은 검색을 한 번 더 돌리지 않도록 여기서 돌려준다.
+        # (exclude_doc_nos를 준 호출에만 붙으므로 일반 검색 응답은 그대로다)
+        if excluded_count is not None:
+            result["excluded_count"] = excluded_count
 
         return result
 

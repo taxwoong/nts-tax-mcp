@@ -67,9 +67,33 @@ law.go.kr(법제처)은 2026-08 서버컴퓨터 이전 시 `server_ext.py`로 �
 | DCM_RGT_DTM_S / DATE | date | 문서일자 (YYYYMMDD) |
 | NTST_TLAW_CL_NM | tax_type | 세목명 |
 | GIST_CNTN | summary | 요지 |
-| CNTN | content | 질의/회신 본문 전문 |
-| FILE_CN | detail_content | 사실관계 등 상세 |
+| CNTN | content | **전문이 아님** — 심판·심사는 전건 `"결정내용은 붙임과 같습니다."` 상수(15자). 질의·사전은 짧은 회신문 |
+| FILE_CN | detail_content | **전문이 아님** — 검색엔진이 잘라주는 검색어 주변 500~900자 스니펫(앞뒤에 `...`) |
 | DOC_ID | doc_id | 내부 문서 ID |
+| NTST_FLE_ID | file_id | **붙임 파일 ID — 결정 이유·사실관계 전문은 여기에만 있다** (아래 참조) |
+
+### 붙임(첨부) 전문 조회 — 2단계 (2026-09-10 확인)
+
+검색 API는 본문을 주지 않는다. 결정문·판결문의 실제 내용(주문·처분개요·청구주장·
+처분청 의견·심리 및 판단, 질의회신의 사실관계)은 전부 붙임 HWP 파일에 들어 있다.
+
+```
+NTST_FLE_ID (검색 응답에 이미 포함)
+  ① POST /action.do  actionId=ACMCMA001MR02  paramData={"fleId": "..."}
+       → fleDwldUri = /downloadFile.do?fleId=...&fleSn=...
+         (fleXsnNm=hwp, fleSz=120~300KB, orcFleNm은 대개 공백)
+  ② GET  {fleDwldUri}   (Referer: 검색화면 필요)
+       → HWP 5.0 = OLE 복합문서 (매직 D0 CF 11 E0 A1 B1 1A E1)
+  ③ hwp_text.extract_text() — BodyText/Section* zlib(-15) 해제 후
+     HWPTAG_PARA_TEXT(67) 레코드에서 문단 텍스트 추출
+```
+
+- `fleSn`(파일 일련번호)은 ①로만 얻을 수 있어 2회 요청이 불가피하다.
+- `ACMCMA001MR02`는 사이트 `/js/common/common.js`의 파일 컴포넌트가 쓰는 액션이다.
+- 실측(12건, 판례·심판·심사·사전·질의 / 2000년~2026년 문서): **전건 성공**.
+  추출 분량은 1,800~17,400자로 스니펫 대비 8~28배.
+- 표 안의 글자는 같은 문단 레코드에 들어와 함께 추출되지만 행·열 구조는 복원되지 않는다.
+- MCP 도구: `nts_ruling_get_full_text` (v5.5)
 
 ### 지원되는 검색 옵션 (서버측)
 - 정렬: `SCORE/DESC`(정확도), `DCM_RGT_DTM/DESC·ASC`(문서일자)
@@ -238,14 +262,15 @@ NTS/OLTA의 법원판례와 **별도 DB**라 문서번호 체계도 다르고 �
 
 ---
 
-## 5. MCP 서버 노출 도구 요약 (현재 v5.4, `server_ext.py` 기준 17개)
+## 5. MCP 서버 노출 도구 요약 (현재 v5.5, `server_ext.py` 기준 18개)
 
-### 기본 7개 (`server.py`)
+### 기본 8개 (`server.py`)
 
 | 도구 | 소스 | 주요 파라미터 |
 |---|---|---|
-| `nts_ruling_search` | NTS | keyword, collections, page, view_count, date_from/to(클라단), sort, tax_type_filter, include_full_text |
-| `nts_ruling_get_by_doc_no` | NTS | doc_no |
+| `nts_ruling_search` | NTS | keyword, collections, page, view_count(기본 5), date_from/to(클라단), sort, tax_type_filter, include_full_text(기본 false) |
+| `nts_ruling_get_by_doc_no` | NTS | doc_no — 요지·스니펫만 |
+| `nts_ruling_get_full_text` | NTS | doc_no, max_chars, start_char — 붙임 HWP 전문 (v5.5) |
 | `olta_ruling_search` | OLTA | keyword, categories, view_count(최대 3 실효), tax_type_filter |
 | `olta_collection_search` | OLTA | keyword, category, page, view_count, date_from/to(서버단), sort |
 | `olta_get_detail` | OLTA | category, doc_id |

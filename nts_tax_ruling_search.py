@@ -43,6 +43,11 @@ BASE_URL = "https://taxlaw.nts.go.kr"
 SEARCH_ENTRY_URL = f"{BASE_URL}/qt/USEQTA001M.do?ntstDcmClCd=01"
 ACTION_URL = f"{BASE_URL}/action.do"
 
+# 붙임 파일 조회 액션 — 검색 응답의 NTST_FLE_ID를 넘기면 다운로드 URI를 돌려준다.
+# (사이트 /js/common/common.js의 파일 컴포넌트가 쓰는 액션. 다운로드에 필요한
+#  fleSn(파일 일련번호)은 이 호출로만 얻을 수 있어 2회 요청이 불가피하다.)
+FILE_META_ACTION = "ACMCMA001MR02"
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -333,6 +338,152 @@ class NtsTaxLawClient:
             ),
         }
 
+    # -----------------------------------------------------------------------
+    # 붙임 전문 조회
+    #
+    # 검색 API는 본문을 주지 않는다 — 심판·심사의 CNTN은 '결정내용은 붙임과
+    # 같습니다.' 상수이고, FILE_CN은 검색어 주변 500~900자 스니펫이다.
+    # 결정 이유·처분개요·청구주장·사실관계는 전부 붙임 HWP 안에 있다.
+    # (2026-09-10 검증: 판례·심판·사전답변·질의회신 12건 전건 수집·추출 성공)
+    # -----------------------------------------------------------------------
+
+    def get_attachment_meta(self, file_id: str) -> list:
+        """붙임 파일 ID로 파일 메타(다운로드 URI·확장자·크기)를 조회한다."""
+        if not self._bootstrapped:
+            self._bootstrap()
+        self._throttle()
+
+        resp = self.session.post(
+            ACTION_URL,
+            data={"actionId": FILE_META_ACTION,
+                  "paramData": json.dumps({"fleId": file_id}, ensure_ascii=False)},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": SEARCH_ENTRY_URL,
+            },
+            verify=self.verify_ssl,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        try:
+            return resp.json()["data"][FILE_META_ACTION] or []
+        except (KeyError, TypeError, ValueError) as e:
+            raise NtsParseError(
+                f"붙임 메타 응답 구조가 예상과 다름 (fleId={file_id}, {e}) — 사이트 개편 가능성"
+            ) from e
+
+    def download_attachment(self, download_uri: str) -> bytes:
+        """fleDwldUri로 붙임 파일 원본을 받는다."""
+        self._throttle()
+        resp = self.session.get(
+            BASE_URL + download_uri,
+            headers={"Referer": SEARCH_ENTRY_URL},
+            verify=self.verify_ssl,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        return resp.content
+
+    def get_attachment_text(self, file_id: str) -> dict:
+        """
+        붙임 파일 ID로 전문 텍스트를 가져온다.
+
+        Returns:
+            status / text / files(파일별 확장자·바이트·추출 자수)
+            HWP가 아닌 붙임(PDF 등)은 텍스트를 못 뽑고 files에 형식만 기록한다.
+        """
+        from hwp_text import extract_text, HwpExtractError  # 지연 import (파서 교체 용이)
+
+        metas = self.get_attachment_meta(file_id)
+        if not metas:
+            return {"status": "NOT_FOUND", "text": "", "files": [],
+                    "message": f"붙임 파일 정보가 없습니다 (file_id={file_id})."}
+
+        texts, files = [], []
+        for meta in metas:
+            uri = meta.get("fleDwldUri")
+            info = {"ext": meta.get("fleXsnNm"), "bytes": meta.get("fleSz")}
+            if not uri:
+                info["오류"] = "다운로드 URI 없음"
+                files.append(info)
+                continue
+            content = self.download_attachment(uri)
+            info["bytes"] = len(content)
+            try:
+                txt = extract_text(content)
+                info["추출자수"] = len(txt)
+                texts.append(txt)
+            except HwpExtractError as e:
+                # 붙임이 HWP가 아니면 전문을 못 읽는다 — 조용히 빈 값을 주면
+                # '자료 없음'으로 오해되므로 형식을 명시해 남긴다.
+                info["오류"] = str(e)
+                logger.warning("붙임 추출 실패 (fleId=%s): %s", file_id, e)
+            files.append(info)
+
+        if not texts:
+            return {"status": "PARSE_ERROR", "text": "", "files": files,
+                    "message": "붙임을 받았으나 본문 텍스트를 추출하지 못했습니다."}
+
+        return {"status": "OK", "text": "\n\n".join(texts), "files": files}
+
+    def get_full_text(self, doc_no: str, max_chars: int = 30000,
+                      start_char: int = 0) -> dict:
+        """
+        문서번호로 붙임 전문을 조회한다 (검색 → 붙임 다운로드 → 텍스트 추출).
+
+        Args:
+            doc_no: 사건번호/문서번호 (예: "조심-2026-서-1112")
+            max_chars: 본문 최대 길이
+            start_char: 본문 시작 오프셋 — 긴 문서를 이어 읽을 때
+        """
+        found = self.get_by_doc_no(doc_no)
+        if not found.get("found"):
+            return found
+
+        item = found["items"][0]
+        file_id = item.get("file_id")
+        if not file_id:
+            return {
+                "status": "NOT_FOUND",
+                "문서번호": item.get("doc_no"),
+                "제목": item.get("title"),
+                "message": (
+                    "이 문서에는 붙임 파일이 없어 전문을 가져올 수 없습니다. "
+                    "요지(summary)와 검색 스니펫만 확인 가능합니다."
+                ),
+                "요지": item.get("summary"),
+            }
+
+        got = self.get_attachment_text(file_id)
+        out = {
+            "status": got["status"],
+            "문서번호": item.get("doc_no"),
+            "제목": item.get("title"),
+            "종류": item.get("doc_type"),
+            "일자": item.get("date"),
+            "세목": item.get("tax_type"),
+            "출처기관": item.get("source_org"),
+            "요지": item.get("summary"),
+            "붙임": got.get("files"),
+        }
+        if got["status"] != "OK":
+            out["message"] = got.get("message")
+            return out
+
+        text = got["text"]
+        total = len(text)
+        out["전문자수"] = total
+        out["전문"] = text[start_char:start_char + max_chars]
+        end = min(start_char + max_chars, total)
+        if end < total or start_char:
+            out["잘림"] = (
+                f"전체 {total}자 중 {start_char}~{end}자만 표시됨 — "
+                f"이어 읽으려면 start_char={end}로 다시 조회 "
+                f"(또는 max_chars를 {total} 이상으로 지정)"
+            )
+        return out
+
     def _parse(self, raw: dict, include_full_text: bool = True) -> dict:
         try:
             srv = raw["data"]["ASEISA001MR01"]["searchResultVO"]
@@ -374,8 +525,15 @@ class NtsTaxLawClient:
             "summary": strip_hl(it.get("GIST_CNTN")),
             "doc_id": it.get("DOC_ID"),
             "related_doc_ids": it.get("RFRN_QUT_NTST_DCM_ID"),
+            # 붙임 파일 ID — 결정 이유·사실관계 전문은 여기 달린 HWP에만 있다.
+            # get_full_text()/nts_ruling_get_full_text 도구가 이 값을 쓴다.
+            "file_id": it.get("NTST_FLE_ID") or None,
         }
         if include_full_text:
+            # 주의: 이름과 달리 '전문'이 아니다 —
+            #   CNTN    = 심판·심사는 전건 '결정내용은 붙임과 같습니다.' 상수
+            #   FILE_CN = 검색어 주변 500~900자 발췌(검색엔진이 잘라주는 스니펫)
+            # 전문이 필요하면 file_id로 get_full_text()를 호출해야 한다.
             item["content"] = strip_hl(it.get("CNTN"))
             item["detail_content"] = strip_hl(it.get("FILE_CN"))
         return item
