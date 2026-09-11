@@ -261,5 +261,5 @@ def ordinance_search(keyword: str, region: str = "", serial: str = "", display: 
 
 
 if __name__ == "__main__":
-    logger.info("nts-tax-mcp 확장판 기동 — 기존 7개 + 법제처 10개 도구")
+    logger.info("nts-tax-mcp 확장판 기동 — 기존 8개 + 법제처 10개 도구")
     mcp.run(transport="streamable-http")
