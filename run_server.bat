@@ -4,6 +4,9 @@ rem LAW_API_OC(기관코드)는 개인 식별정보라 이 파일(공개 레포)
 rem 서버컴퓨터에만 두는 local_env.bat(.gitignore 처리됨)에서 불러온다:
 rem   @echo off
 rem   set LAW_API_OC=본인_기관코드
+rem 접근 제한(직원 전용 URL)을 쓰려면 local_env.bat에 아래 두 줄을 함께 넣는다:
+rem   set NTS_AUTH_MODE=warn        (확인 후 enforce로 변경 — 자세한 건 README 참조)
+rem   set NTS_PUBLIC_BASE=https://<서버주소>
 cd /d %~dp0
 set PORT=8734
 if exist local_env.bat call local_env.bat

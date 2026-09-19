@@ -261,5 +261,22 @@ def ordinance_search(keyword: str, region: str = "", serial: str = "", display: 
 
 
 if __name__ == "__main__":
+    import uvicorn
+
+    from auth_gate import TokenGate, describe
+
     logger.info("nts-tax-mcp 확장판 기동 — 기존 8개 + 법제처 10개 도구")
-    mcp.run(transport="streamable-http")
+
+    # mcp.run() 대신 앱을 직접 만들어 접근 토큰 게이트를 한 겹 두른다.
+    # (mcp.run(transport="streamable-http")이 내부적으로 하던 것과 동일한 구성)
+    app = TokenGate(
+        mcp.streamable_http_app(),
+        mcp_path=mcp.settings.streamable_http_path,
+    )
+    logger.info("접근 제어: %s", describe(app))
+    uvicorn.run(
+        app,
+        host=mcp.settings.host,
+        port=mcp.settings.port,
+        log_level=mcp.settings.log_level.lower(),
+    )

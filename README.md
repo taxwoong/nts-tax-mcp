@@ -152,6 +152,39 @@ Railway 크레딧 소진으로 서버가 다운된 뒤(2026-08-08), 자체 서�
 포트를 바꾸면 `run_server.bat`의 `PORT`와 `tailscale funnel`의 대상 포트를 함께 바꿔야 합니다.
 공유기에서 이 포트를 직접 포워딩하지 말고 Tailscale Funnel만 사용하세요.
 
+### 접근 제한 (사무실 인원만 쓰게 하기)
+
+Funnel 주소는 인증이 없으면 주소를 아는 누구나 호출할 수 있습니다. 그 호출은 **서버 운영자의
+법제처 인증키(OC)와 IP로** 원천 사이트에 나가고, 원천 요청 간격 제한(`NTS_MIN_REQUEST_INTERVAL`)이
+프로세스 전역 공유라서 외부 호출이 늘면 내 조회까지 느려집니다.
+
+`auth_gate.py`가 **사람마다 다른 URL**을 발급해 이를 막습니다. claude.ai 커넥터는 요청이
+사용자 PC가 아니라 Anthropic 서버에서 나오기 때문에 IP 허용목록·Tailscale ACL로는 구분할 수
+없고, 커스텀 헤더를 못 넣는 클라이언트도 있어 **URL 경로에 토큰을 넣는 방식**을 씁니다.
+
+```bash
+python auth_gate.py add 홍길동      # 발급 + 그 사람 전용 URL 출력
+python auth_gate.py list            # 발급 현황 (토큰 뒷자리만)
+python auth_gate.py revoke 홍길동   # 그 사람 URL만 무효화 (서버 재시작 후 적용)
+```
+
+발급된 주소는 `https://<서버주소>/t/<토큰>/mcp` 형태이고, 커넥터 URL에 이 주소를 그대로
+넣으면 됩니다. `Authorization: Bearer <토큰>` 헤더나 `?k=<토큰>` 쿼리도 같이 받습니다.
+토큰은 `local_tokens.json`(`.gitignore` 처리)에 저장되며 저장소에 올라가지 않습니다.
+
+모드는 환경변수 `NTS_AUTH_MODE`로 정합니다.
+
+| 값 | 동작 |
+|---|---|
+| `off` | 게이트 없음 (종전과 동일). **토큰을 아직 발급하지 않았으면 자동으로 이 값** |
+| `warn` | 차단하지 않고 토큰 없는 요청만 `server.log`에 기록 — 전환 기간용 |
+| `enforce` | 토큰 없는 요청은 401. **토큰 파일이 있으면 기본값** |
+
+전환은 `warn`으로 며칠 돌려 누가 쓰는지 로그로 확인한 뒤 `enforce`로 넘기는 순서를 권합니다.
+`local_env.bat`에 `set NTS_AUTH_MODE=warn`, `set NTS_PUBLIC_BASE=https://<서버주소>` 두 줄을
+넣어두면 발급 명령이 완성된 URL을 바로 찍어줍니다. 토큰 없이 서버 생존만 확인하려면
+`GET /healthz`를 쓰세요.
+
 ### Railway 배포 (레거시)
 
 `Procfile`은 여전히 `python server.py`를 실행하므로, Railway로 배포하면 **기본 7개
