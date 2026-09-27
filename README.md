@@ -2,13 +2,14 @@
 
 **한국 세법·법령 통합 검색 MCP 서버.** 국세청 국세법령정보시스템(taxlaw.nts.go.kr),
 지방세법령정보시스템(olta.re.kr), 법제처 국가법령정보센터(law.go.kr)를 하나의 커넥터로
-묶어 **도구 18개**로 검색합니다. 심판례·판례·질의회신·법령 조문·부칙·조문 개정 diff까지
-Claude 채팅에서 바로 조회하고, 인용한 문서번호의 실존 여부까지 검증합니다.
+묶어 **도구 18개**로 검색합니다. 심판례·판례·질의회신은 결정문 **전문**(붙임 HWP)까지,
+법령은 조문·부칙·조문 개정 diff까지 Claude 채팅에서 바로 조회하고, 인용한 문서번호의
+실존 여부까지 검증합니다.
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![MCP](https://img.shields.io/badge/MCP-streamable--http-black)
 ![tools](https://img.shields.io/badge/tools-18-brightgreen)
-![status](https://img.shields.io/badge/version-v5.4-informational)
+![status](https://img.shields.io/badge/version-v5.5-informational)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
 ```bash
@@ -32,11 +33,11 @@ python server_ext.py          # http://0.0.0.0:8000/mcp (포트는 PORT 환경�
 | **지방세** | 취득세 · 재산세 · 자동차세 · 지방소득세 · 등록면허세 — 조세심판원 결정례 · 감사원 심사결정례 · 헌재 결정례 · 법원판례 · 법제처/행안부 유권해석 | 불필요 |
 | **법령정보** | 대법원·하급심 판례, 법령 연혁 · 특정 시점 조문 · 조문 개정 diff · 부칙(시행일·적용례), 법령해석례, 행정규칙(기본통칙 등), 조세조약, 자치법규(조례) | `LAW_API_OC` |
 
-- **키 없이** `python server.py` → 국세·지방세 도구 **7개**가 바로 동작합니다.
+- **키 없이** `python server.py` → 국세·지방세 도구 **8개**가 바로 동작합니다.
 - **법령정보 10개**를 더 쓰려면 `server_ext.py`로 실행하고 `LAW_API_OC`를 설정하세요.
   [open.law.go.kr](https://open.law.go.kr)에서 무료로 발급받는 기관코드이며, **등록한
   IP에서만** 동작하므로 서버 공인 IP를 사전 등록해야 합니다. 미설정 시 법령정보 도구만
-  `AUTH_ERROR`를 반환하고 나머지 7개는 정상 동작합니다.
+  `AUTH_ERROR`를 반환하고 나머지 8개는 정상 동작합니다.
 
 ## 제공 도구 (18개)
 
@@ -98,7 +99,7 @@ Claude 채팅에서 자연어로 물어보면 됩니다.
 ```bash
 pip install -r requirements.txt
 
-python server.py         # 기본 7개 (국세·지방세) — 키 불필요
+python server.py         # 기본 8개 (국세·지방세·인용검증) — 키 불필요
 python server_ext.py     # 18개 (기본 8개 + 법제처 10개) — LAW_API_OC 필요
 ```
 
@@ -109,8 +110,8 @@ python server_ext.py     # 18개 (기본 8개 + 법제처 10개) — LAW_API_OC 
 PORT=8765 python server_ext.py
 ```
 
-`server_ext.py`는 `from server import mcp`로 기본 7개를 그대로 물려받고 법제처 10개를
-추가 등록하는 구조라, `server.py` 자체는 수정되지 않습니다. 기본 7개만 필요하면
+`server_ext.py`는 `from server import mcp`로 기본 8개를 그대로 물려받고 법제처 10개를
+추가 등록하는 구조라, `server.py` 자체는 수정되지 않습니다. 기본 8개만 필요하면
 `server.py`를 그대로 실행하면 됩니다.
 
 ### 환경변수 옵션
@@ -119,8 +120,12 @@ PORT=8765 python server_ext.py
 |---|---|---|
 | `PORT` | 8000 | 서버 포트 |
 | `NTS_VERIFY_SSL` | true | SSL 인증서 검증 여부. 사내망/프록시에서 인증서 오류 시에만 `false`로 임시 우회 |
+| `OLTA_VERIFY_SSL` | true | 위와 같음 (지방세 olta.re.kr용) |
 | `NTS_CACHE_TTL` | 300 | 동일 검색 결과 캐시 유지 시간(초) |
 | `NTS_MIN_REQUEST_INTERVAL` | 0.5 | 국세청 서버로 보내는 요청 사이 최소 간격(초) |
+| `NTS_RESPONSE_CHAR_CAP` | 30000 | 검색 응답 총량 상한(자). 넘으면 항목이 많은 컬렉션부터 덜어내고 `_잘림` 안내를 붙임 (v5.5) |
+| `NTS_AUTH_MODE` | 자동 | 접근 토큰 게이트 모드 `off`/`warn`/`enforce` — [접근 제한](#접근-제한-사무실-인원만-쓰게-하기) 참고 |
+| `NTS_PUBLIC_BASE` | 없음 | 외부 공개 주소(예: `https://<서버주소>`). 설정하면 `auth_gate.py add`가 완성된 URL을 출력 |
 | `LOG_LEVEL` | INFO | 로깅 레벨 (DEBUG로 두면 세션 재접속/캐시 히트 등이 상세히 찍힘) |
 | `LAW_API_OC` | 없음 (필수) | `server_ext.py` 전용. law.go.kr 가입 시 발급받는 기관코드 — 미설정시 법제처 10개 도구가 `AUTH_ERROR`를 반환. 이 코드로 등록된 IP에서만 동작 (`open.law.go.kr` → OpenAPI 신청내역에서 서버 공인 IP 사전 등록 필요). 개인 식별정보이므로 소스에 직접 적지 말고 배포 환경에서 주입할 것 |
 
@@ -141,7 +146,7 @@ Railway 크레딧 소진으로 서버가 다운된 뒤(2026-08-08), 자체 서�
 2. `run_server.bat`이 `PORT=8734`를 설정하고 `server_ext.py`를 실행합니다 (로그:
    `server.log`). `LAW_API_OC`는 이 파일에 직접 적지 않고, `.gitignore`된 로컬 파일
    (`local_env.bat` — `set LAW_API_OC=본인_기관코드` 한 줄)에서 불러옵니다. 이 파일이
-   없으면 법제처 10개 도구만 동작하지 않고 기본 7개는 정상입니다.
+   없으면 법제처 10개 도구만 동작하지 않고 기본 8개는 정상입니다.
 3. [Tailscale](https://tailscale.com)을 설치해 로그인 후 Funnel로 외부에 고정 주소로 노출합니다.
    ```powershell
    tailscale funnel --bg 8734
@@ -187,7 +192,7 @@ python auth_gate.py revoke 홍길동   # 그 사람 URL만 무효화 (서버 재
 
 ### Railway 배포 (레거시)
 
-`Procfile`은 여전히 `python server.py`를 실행하므로, Railway로 배포하면 **기본 7개
+`Procfile`은 여전히 `python server.py`를 실행하므로, Railway로 배포하면 **기본 8개
 도구만** 뜨고 법제처 10개 도구(`server_ext.py`)는 포함되지 않습니다. 크레딧이 소진되면
 서버가 그대로 죽으므로 현재는 권장하지 않지만, 여전히 동작은 합니다.
 
@@ -206,8 +211,9 @@ python auth_gate.py revoke 홍길동   # 그 사람 URL만 무효화 (서버 재
 4. URL: 서버의 `.../mcp` 주소 입력 후 저장
    (운영 주소는 서버컴퓨터에서 `tailscale funnel status`로 확인)
 5. 도구 권한을 **"항상 허용"**으로 설정 (기본값 "승인 필요"는 매번 승인을 물어봄)
-6. **완전히 새 대화창**을 열어서 도구 목록에 뜨는지 확인
-   (커넥터를 새로 켠 직후에는 기존에 열려 있던 대화창에 반영되지 않을 수 있습니다)
+6. 새 대화창에서 도구 목록에 뜨는지 확인
+   (커넥터를 새로 켜거나 서버에 도구를 추가한 직후에는 목록이 늦게 반영됩니다. 기존
+   대화창에서도 몇 분 지나면 자동으로 갱신되니 재등록할 필요는 없습니다)
 
 ## 문제가 생겼을 때
 
@@ -233,8 +239,9 @@ python test_mcp_client.py --url http://127.0.0.1:8734/mcp
 **이 스크립트가 전부 성공하는데 Claude 채팅에서는 도구가 안 보인다면**, 원인은 서버가 아니라
 Claude 쪽 커넥터 인식/캐싱 문제입니다. 이 경우 아래를 시도해 보세요.
 
-- 완전히 새 대화창에서 다시 확인 (커넥터를 새로 켠 직후엔 기존 대화창에 반영 안 될 수 있음)
-- 설정 → 커넥터에서 해당 커넥터를 삭제 후 재등록
+- 몇 분 기다렸다 다시 확인 (도구 목록은 캐시되어 늦게 반영되지만, 같은 대화창에서도 자동 갱신됨 — 2026-08 실측)
+- 새 대화창에서 다시 확인
+- 그래도 안 되면 설정 → 커넥터에서 해당 커넥터를 삭제 후 재등록
 - 그래도 안 되면 `support.claude.com`에 문의 (Claude 플랫폼 쪽 반영 지연/버그일 가능성)
 
 ### 그래도 안 되면 이슈로 알려주세요
@@ -267,6 +274,8 @@ nts-tax-mcp/
 ├── nts_tax_ruling_search.py     # 국세: taxlaw.nts.go.kr 검색 클라이언트
 ├── olta_tax_ruling_search.py    # 지방세: olta.re.kr 검색 클라이언트
 ├── law_go_kr.py                 # 법령정보: law.go.kr Open API 클라이언트 (판례/법령/해석례/행정규칙/조약/자치법규)
+├── hwp_text.py                  # 붙임 HWP 5.0 → 본문 텍스트 변환 (전문 조회용, v5.5)
+├── auth_gate.py                 # 사람별 URL 토큰 게이트 + 발급·조회·폐기 CLI
 ├── test_mcp_client.py           # 서버 상태 독립 점검 스크립트
 ├── tests/                       # 파서 회귀 테스트 (v5.4)
 │   ├── refresh_fixtures.py      #   실제 응답을 픽스처로 캡처 (OC 키 자동 마스킹)
@@ -279,12 +288,13 @@ nts-tax-mcp/
 │   └── README.md
 ├── requirements.txt
 ├── LICENSE                      # MIT
-├── CHANGELOG.md                 # 버전별 변경 이력 (v2 ~ v5.4)
+├── CHANGELOG.md                 # 버전별 변경 이력 (v2 ~ v5.5)
 ├── DATA_SOURCES.md              # 자료원 사양·코드표 (세목/카테고리 코드 등)
 ├── Procfile                     # Railway 배포용 (레거시 — 현재 운영은 서버컴퓨터+Tailscale Funnel)
 ├── setup.ps1                    # 서버컴퓨터 최초 설치 스크립트 (소스 다운로드→의존성→작업 스케줄러 등록)
 ├── run_server.bat               # 확장판(server_ext.py) 상시 구동용 — 작업 스케줄러가 부팅 시 실행
-└── local_env.bat                # (커밋 안 됨) LAW_API_OC 등 개인 식별정보 — .gitignore 처리, 서버컴퓨터에서 직접 생성
+├── local_env.bat                # (커밋 안 됨) LAW_API_OC 등 개인 식별정보 — .gitignore 처리, 서버컴퓨터에서 직접 생성
+└── local_tokens.json            # (커밋 안 됨) auth_gate.py가 발급한 접근 토큰
 ```
 
 ## 도구 파라미터 참고
@@ -500,7 +510,7 @@ nts-tax-mcp/
 ## 알려진 제한 사항
 
 - **법제처(law.go.kr) 도구 10개는 `server_ext.py`로 실행했을 때만 사용 가능**합니다.
-  `server.py`만 단독 실행하면 기본 7개만 노출됩니다.
+  `server.py`만 단독 실행하면 기본 8개만 노출됩니다.
 - **law.go.kr IP 화이트리스트**: 등록되지 않은 IP에서 호출하면 법제처 도구 전체가
   "인증 실패"(`status: AUTH_ERROR`)를 반환합니다. `open.law.go.kr` → OpenAPI
   신청내역에서 서버의 공인 IP를 먼저 등록해야 합니다.
@@ -533,7 +543,7 @@ nts-tax-mcp/
 ## 변경 이력
 
 버전별 상세 변경 내용은 [CHANGELOG.md](CHANGELOG.md)를 참고하세요.
-최신은 **v5.4** (2026-08-28) — 인용 검증 · 조문 diff · 오류 응답 계약(`status`) · 파서 회귀 테스트.
+최신은 **v5.5** (2026-09-10) — 결정문 전문 조회(붙임 HWP) · 응답 경량화(평균 6.4배 감소) · 응답 총량 상한.
 
 세부 데이터 사양·코드표(세목 코드, 카테고리 코드 등)는 [DATA_SOURCES.md](DATA_SOURCES.md)에 있습니다.
 
