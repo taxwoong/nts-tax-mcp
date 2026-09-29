@@ -545,13 +545,14 @@ def test_cap_response_reaches_nested_collections():
 # 레코드 헤더·제어문자 폭 계산을 합성 바이트로 직접 검증한다.
 # ---------------------------------------------------------------------------
 
-def _hwp_record(tag: int, payload: bytes) -> bytes:
+def _hwp_record(tag: int, payload: bytes, level: int = 0) -> bytes:
     """레코드 헤더(tag|level|size) + 페이로드. size가 0xFFF 이상이면 확장 4바이트."""
     import struct
+    base = (tag & 0x3FF) | ((level & 0x3FF) << 10)
     if len(payload) >= 0xFFF:
-        header = (tag & 0x3FF) | (0xFFF << 20)
+        header = base | (0xFFF << 20)
         return struct.pack("<I", header) + struct.pack("<I", len(payload)) + payload
-    header = (tag & 0x3FF) | (len(payload) << 20)
+    header = base | (len(payload) << 20)
     return struct.pack("<I", header) + payload
 
 
@@ -606,6 +607,117 @@ def test_hwp_rejects_non_ole_with_clear_message():
             assert "HWP 5.0" in str(e), f"{label}: 안내 문구 누락 — {e}"
         else:
             raise AssertionError(f"{label}인데 예외가 나지 않았다")
+
+
+# 표 — 실제 붙임과 같은 레코드 배치를 합성한다:
+#   PARA_HEADER(L) > CTRL_HEADER('tbl ', L+1) > TABLE(L+2),
+#   셀마다 LIST_HEADER(L+2) 뒤에 그 셀의 PARA_HEADER(L+2) > PARA_TEXT(L+3)
+
+_HWPTAG_PARA_HEADER = 0x10 + 50  # 66 — 파서는 안 쓰지만 실제 배치대로 넣는다
+
+
+def _para(text: str, level: int = 0) -> bytes:
+    from hwp_text import HWPTAG_PARA_TEXT
+    return (_hwp_record(_HWPTAG_PARA_HEADER, bytes(12), level)
+            + _hwp_record(HWPTAG_PARA_TEXT, _utf16(text), level + 1))
+
+
+def _table(rows: int, cols: int, cells: list, level: int = 0) -> bytes:
+    """cells: [(col, row, colspan, rowspan, [문단 글자 또는 중첩 표 바이트, ...]), ...]"""
+    import struct
+    from hwp_text import HWPTAG_CTRL_HEADER, HWPTAG_LIST_HEADER, HWPTAG_TABLE
+    out = (_hwp_record(_HWPTAG_PARA_HEADER, bytes(12), level)  # 표를 품은 문단
+           + _hwp_record(HWPTAG_CTRL_HEADER, b" lbt" + bytes(40), level + 1)
+           + _hwp_record(HWPTAG_TABLE, struct.pack("<IHH", 0, rows, cols) + bytes(20), level + 2))
+    for col, row, colspan, rowspan, contents in cells:
+        out += _hwp_record(HWPTAG_LIST_HEADER,
+                           struct.pack("<HHI", len(contents), 0, 0)
+                           + struct.pack("<HHHH", col, row, colspan, rowspan) + bytes(18),
+                           level + 2)
+        for c in contents:
+            out += c if isinstance(c, bytes) else _para(c, level + 2)
+    return out
+
+
+def test_hwp_table_to_markdown():
+    """숫자 표를 칸마다 한 줄로 풀면 어느 숫자가 어느 열인지 알 수 없다 (심사 결정문 세액표)."""
+    from hwp_text import _body_text
+
+    stream = (_para("가. 처분 내용")
+              + _table(4, 3, [
+                  (0, 0, 1, 2, ["구분"]),            # 2행 병합 — 머리행이 2줄
+                  (1, 0, 2, 1, ["세액"]),            # 2열 병합 — 열 제목에 반복돼야 함
+                  (1, 1, 1, 1, ["당초"]), (2, 1, 1, 1, ["경정"]),
+                  (0, 2, 1, 1, ["양도가액"]), (1, 2, 1, 1, ["100"]), (2, 2, 1, 1, ["80"]),
+                  (0, 3, 1, 1, ["가산세"]),
+                  (1, 3, 1, 1, ["253,300\n(25,330)"]),  # 칸 안 줄바꿈 — 한 칸이 두 줄로 쪼개지면 안 됨
+                  (2, 3, 1, 1, ["a|b"]),
+              ])
+              + _para("나. 청구인 주장"))
+    text = _body_text(stream)
+    lines = text.split("\n")
+    assert "| 구분 | 세액 당초 | 세액 경정 |" in lines, text
+    assert "|---|---|---|" in lines, text
+    assert "| 양도가액 | 100 | 80 |" in lines, text
+    assert "| 가산세 | 253,300 (25,330) | a\\|b |" in lines, text  # 파이프는 이스케이프
+    assert text.index("가. 처분 내용") < text.index("| 구분") < text.index("나. 청구인 주장"), text
+
+
+def test_hwp_layout_tables_stay_text():
+    """본문을 감싼 1칸 틀·서식형 격자는 표가 아니라 글 — 틀 안의 데이터 표는 다시 표로."""
+    from hwp_text import _body_text
+
+    data = _table(2, 2, [(0, 0, 1, 1, ["연도"]), (1, 0, 1, 1, ["세액"]),
+                         (0, 1, 1, 1, ["2024"]), (1, 1, 1, 1, ["500"])], level=2)
+    frame = _table(1, 1, [(0, 0, 1, 1, ["1. 처분개요", data, "2. 판단"])])
+    text = _body_text(frame)
+    assert "1. 처분개요\n" in text and "\n2. 판단" in text, text
+    assert "| 연도 | 세액 |" in text and "| 2024 | 500 |" in text, text
+
+    # 서식형: 행마다 칸 배치가 다른 가는 격자 — 모든 열로 갈린 행이 없다
+    form = _table(3, 6, [
+        (0, 0, 2, 1, ["[문서번호]"]), (2, 0, 4, 1, ["재산세제과-213"]),
+        (0, 1, 6, 1, ["[제 목]"]),
+        (0, 2, 3, 1, ["[세목]"]), (3, 2, 3, 1, ["상증"]),
+    ])
+    text = _body_text(form)
+    assert "|" not in text, f"서식형 격자가 Markdown 표로 나갔다:\n{text}"
+    assert text.split("\n") == ["[문서번호]", "재산세제과-213", "[제 목]", "[세목]", "상증"], text
+
+
+def test_hwp_table_bogus_size_falls_back_to_text():
+    """행·열 수가 깨진 표에 65535×65535 격자를 만들면 서버가 멈춘다 — 글로 내보내야 한다."""
+    from hwp_text import _body_text
+
+    text = _body_text(_table(65535, 65535, [(0, 0, 1, 1, ["첫 칸"]), (1, 0, 1, 1, ["둘째 칸"])]))
+    assert text.split("\n") == ["첫 칸", "둘째 칸"], text
+
+
+def test_full_text_blank_attachment():
+    """글자 없는 붙임(표본 197건 중 12건)을 OK+빈 전문으로 주면 '본문 없음'으로 오해된다."""
+    import hwp_text
+    from nts_tax_ruling_search import NtsTaxLawClient
+
+    client = NtsTaxLawClient()
+    client.get_attachment_meta = lambda fid: [{"fleDwldUri": "/x", "fleXsnNm": "hwp"}]
+    client.download_attachment = lambda uri: b"hwp"
+    orig = hwp_text.extract_text
+    hwp_text.extract_text = lambda data: ""
+    try:
+        def lookup(content):
+            client.get_by_doc_no = lambda d: {"found": True, "items": [
+                {"doc_no": d, "file_id": "1", "content": content}]}
+            return client.get_full_text("기획재정부 법인세제과-84")
+
+        got = lookup("분할신설법인으로 이전하지 못한 경우는 분할하기 어려운 자산에 해당하지 않는 것임")
+        assert got["status"] == "OK" and got["전문"].startswith("분할신설법인"), got
+        assert "비어" in got.get("비고", ""), got
+
+        # 심판·심사의 content는 상수 — 이걸 전문이라고 주면 안 된다
+        got = lookup("결정내용은 붙임과 같습니다.")
+        assert got["status"] == "NOT_FOUND" and "비어" in got["message"], got
+    finally:
+        hwp_text.extract_text = orig
 
 
 def test_nts_parse_exposes_file_id():

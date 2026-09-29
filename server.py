@@ -298,7 +298,9 @@ def nts_ruling_get_full_text(doc_no: str, max_chars: int = 30000,
     Returns:
         문서번호·제목·종류·일자·세목·요지 + 전문(본문 텍스트) + 전문자수.
         붙임이 없는 문서는 status=NOT_FOUND와 함께 요지만 반환합니다.
-        표 안의 글자는 함께 추출되지만 행·열 구조는 복원되지 않습니다.
+        세액 비교표 같은 표(2행·2열 이상)는 Markdown 표로 복원되어 열 제목과 숫자가
+        짝지어 나옵니다. 붙임이 글자 없는 빈 파일이면 검색 결과 본문을 대신 주고
+        '비고'로 알립니다.
     """
     return _tool_guard(_client.get_full_text, doc_no, max_chars, start_char)
 

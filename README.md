@@ -9,7 +9,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![MCP](https://img.shields.io/badge/MCP-streamable--http-black)
 ![tools](https://img.shields.io/badge/tools-18-brightgreen)
-![status](https://img.shields.io/badge/version-v5.5-informational)
+![status](https://img.shields.io/badge/version-v5.6-informational)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
 ```bash
@@ -288,7 +288,7 @@ nts-tax-mcp/
 │   └── README.md
 ├── requirements.txt
 ├── LICENSE                      # MIT
-├── CHANGELOG.md                 # 버전별 변경 이력 (v2 ~ v5.5)
+├── CHANGELOG.md                 # 버전별 변경 이력 (v2 ~ v5.6)
 ├── DATA_SOURCES.md              # 자료원 사양·코드표 (세목/카테고리 코드 등)
 ├── Procfile                     # Railway 배포용 (레거시 — 현재 운영은 서버컴퓨터+Tailscale Funnel)
 ├── setup.ps1                    # 서버컴퓨터 최초 설치 스크립트 (소스 다운로드→의존성→작업 스케줄러 등록)
@@ -342,9 +342,14 @@ nts-tax-mcp/
 | 사전답변·질의회신 | 1. 사실관계 / 2. 질의내용 / 3. 회신 |
 
 붙임은 HWP 5.0 형식이며 `hwp_text.py`(의존성은 `olefile` 하나)가 파싱합니다.
-표 안의 글자도 함께 추출되지만 행·열 구조는 복원되지 않습니다.
-붙임이 HWP가 아닌 문서(PDF 등)는 `status=PARSE_ERROR`와 함께 형식을 알려줍니다 —
-**자료 부존재가 아닙니다.**
+**2행·2열 이상인 표는 Markdown 표로 복원**됩니다(v5.6) — 병합된 열 제목은 펼쳐서
+"세액 당초 | 세액 경정"처럼 한 줄 머리행으로 합칩니다. 본문 전체를 감싼 1칸짜리 틀과
+서식처럼 칸을 배치한 표는 표가 아니라 글이므로 문단으로 둡니다.
+
+| 상황 | 응답 |
+|---|---|
+| 붙임이 HWP가 아님(PDF 등) | `status=PARSE_ERROR` + 형식 안내 — **자료 부존재가 아닙니다** |
+| 붙임이 글자 없는 빈 HWP (주로 오래된 질의회신·일부 기재부 회신) | 검색 결과 본문을 `전문`으로 대신 주고 `비고`로 알림. 그것도 없으면 `NOT_FOUND` |
 
 ### `verify_citations` (인용 검증, v5.4)
 
@@ -543,7 +548,7 @@ nts-tax-mcp/
 ## 변경 이력
 
 버전별 상세 변경 내용은 [CHANGELOG.md](CHANGELOG.md)를 참고하세요.
-최신은 **v5.5** (2026-09-10) — 결정문 전문 조회(붙임 HWP) · 응답 경량화(평균 6.4배 감소) · 응답 총량 상한.
+최신은 **v5.6** (2026-09-30) — 붙임 표를 Markdown 표로 복원 · 빈 붙임 처리 · 접근 토큰 게이트.
 
 세부 데이터 사양·코드표(세목 코드, 카테고리 코드 등)는 [DATA_SOURCES.md](DATA_SOURCES.md)에 있습니다.
 

@@ -413,7 +413,12 @@ class NtsTaxLawClient:
             try:
                 txt = extract_text(content)
                 info["추출자수"] = len(txt)
-                texts.append(txt)
+                if txt.strip():
+                    texts.append(txt)
+                else:
+                    # 국세청이 글자 없는 HWP를 붙여 둔 문서가 있다(표본 197건 중 12건,
+                    # 주로 질의). 빈 문자열을 OK로 넘기면 '본문 없음'으로 오해된다.
+                    info["비고"] = "빈 붙임 — 본문 글자가 없는 HWP"
             except HwpExtractError as e:
                 # 붙임이 HWP가 아니면 전문을 못 읽는다 — 조용히 빈 값을 주면
                 # '자료 없음'으로 오해되므로 형식을 명시해 남긴다.
@@ -422,8 +427,11 @@ class NtsTaxLawClient:
             files.append(info)
 
         if not texts:
-            return {"status": "PARSE_ERROR", "text": "", "files": files,
-                    "message": "붙임을 받았으나 본문 텍스트를 추출하지 못했습니다."}
+            if any("오류" in f for f in files):
+                return {"status": "PARSE_ERROR", "text": "", "files": files,
+                        "message": "붙임을 받았으나 본문 텍스트를 추출하지 못했습니다."}
+            return {"status": "EMPTY", "text": "", "files": files,
+                    "message": "붙임 파일에 본문 글자가 없습니다(빈 HWP)."}
 
         return {"status": "OK", "text": "\n\n".join(texts), "files": files}
 
@@ -456,6 +464,20 @@ class NtsTaxLawClient:
             }
 
         got = self.get_attachment_text(file_id)
+        note = None
+        if got["status"] == "EMPTY":
+            # 빈 붙임 문서는 검색 결과 본문(CNTN)에 회신이 들어 있다 — 그걸 대신 준다.
+            # 단 심판·심사의 CNTN은 '결정내용은 붙임과 같습니다.' 상수라 쓸 수 없다.
+            body = (item.get("content") or "").strip()
+            if body and "붙임과 같습니다" not in body:
+                got = {"status": "OK", "text": body, "files": got["files"]}
+                note = ("붙임 파일이 비어 있어(글자 없는 HWP) 검색 결과의 본문을 대신 "
+                        "반환합니다. 짧은 회신은 이것이 전부일 수 있으나 원문 전체인지는 "
+                        "확인할 수 없습니다.")
+            else:
+                got = {"status": "NOT_FOUND", "files": got["files"],
+                       "message": ("붙임 파일이 비어 있고(글자 없는 HWP) 검색 결과에도 "
+                                   "본문이 없어 전문을 가져올 수 없습니다. 요지만 확인 가능합니다.")}
         out = {
             "status": got["status"],
             "문서번호": item.get("doc_no"),
@@ -473,6 +495,8 @@ class NtsTaxLawClient:
 
         text = got["text"]
         total = len(text)
+        if note:
+            out["비고"] = note
         out["전문자수"] = total
         out["전문"] = text[start_char:start_char + max_chars]
         end = min(start_char + max_chars, total)
