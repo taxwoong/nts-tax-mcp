@@ -2,7 +2,7 @@
 """
 server_ext.py — nts-tax-mcp 확장 진입점
 기존 server.py의 도구 8개(국세 NTS + 붙임 전문 + 지방세 olta + 인용검증)를 그대로 물려받고,
-법제처 law.go.kr Open API 도구 10개를 추가한다. 커넥터 하나로 통합 운영.
+법제처 law.go.kr Open API 도구 11개를 추가한다. 커넥터 하나로 통합 운영.
 
 실행: PORT=8734 LAW_API_OC=<발급받은 기관코드> python server_ext.py
 (run_server.bat이 이 파일을 실행한다. server.py는 수정하지 않는다.)
@@ -83,10 +83,20 @@ def court_case_search(keyword: str, court: str = "", date_from: str = "",
 
 
 @mcp.tool()
-def court_case_detail(case_serial: str, max_chars: int = 8000) -> dict:
+def court_case_detail(case_serial: str, max_chars: int = 8000, start_char: int = 0) -> dict:
     """법제처 판례 본문 조회 — court_case_search 결과의 '판례일련번호'로
-    판시사항·판결요지·참조조문·판례내용 전문을 가져온다."""
-    return _safe(_law.get_case, case_serial, max_chars)
+    판시사항·판결요지·참조조문·판례내용 전문을 가져온다.
+
+    판례내용이 max_chars보다 길면 응답의 "잘림" 안내대로 start_char를 넘겨 이어 읽는다.
+    검색 결과에 '본문조회' 안내가 붙은 판례(국세청 제공분)는 이 도구로 열리지 않으니
+    안내대로 nts_ruling_get_full_text를 쓴다.
+
+    Args:
+        case_serial: 판례일련번호 (court_case_search 결과)
+        max_chars: 판례내용 최대 길이 (기본 8000)
+        start_char: 판례내용 시작 오프셋 — 잘린 뒷부분을 이어 읽을 때
+    """
+    return _safe(_law.get_case, case_serial, max_chars, start_char)
 
 
 @mcp.tool()
@@ -208,6 +218,35 @@ def law_addenda_search(law_name: str = "", mst: str = "", law_id: str = "",
 
 
 @mcp.tool()
+def law_revision_reason(law_name: str, promul_no: str = "", year: str = "",
+                        law_id: str = "", include_amendment_text: bool = False,
+                        max_chars: int = 6000) -> dict:
+    """법령 제정·개정이유 원문 — 국가법령정보센터 '제정·개정이유'와 같은 자료.
+
+    "이 조문은 왜 신설됐나", "2011년 개정 취지는?" 같은 입법취지 질문에 사용한다.
+    각 개정의 ◇개정이유 / ◇주요내용을 법제처 원문 그대로 반환한다(제정부터 수록).
+
+    사용법:
+    1) law_name만 주면 개정 목록(공포일자·공포번호·제개정구분)을 최신순으로 반환
+    2) promul_no 또는 year를 지정하면 그 개정들의 개정이유 전문
+       예: promul_no="제정,10410" / year="2011,2019,2020,2022" (한 번에 최대 10건)
+
+    타법개정(다른 법 개정에 딸린 개정)은 개정이유가 그 다른 법의 것이므로 응답의
+    '주의'와 개정문(이 법이 실제로 어떻게 고쳐졌는지)을 함께 보라.
+
+    Args:
+        law_name: 법령명 (예: "국제조세조정에 관한 법률", "소득세법 시행령")
+        promul_no: 공포번호, 쉼표로 여러 개 — "제정"이라고 쓰면 제정 법령
+        year: 공포연도(YYYY), 쉼표로 여러 개 — 그해 공포된 개정 전부
+        law_id: 법령ID (생략 시 법령명 정확 일치로 자동 결정)
+        include_amendment_text: True면 개정문(어느 조문을 어떻게 고쳤는지)도 함께
+        max_chars: 개정 1건당 본문 최대 길이 (기본 6000)
+    """
+    return _safe(_law.law_revision_reason, law_name, law_id, promul_no, year,
+                 include_amendment_text, max_chars)
+
+
+@mcp.tool()
 def admin_rule_search(keyword: str, serial: str = "", display: int = 10,
                       article: str = "", max_chars: int = 10000,
                       start_char: int = 0) -> object:
@@ -265,7 +304,7 @@ if __name__ == "__main__":
 
     from auth_gate import TokenGate, describe
 
-    logger.info("nts-tax-mcp 확장판 기동 — 기존 8개 + 법제처 10개 도구")
+    logger.info("nts-tax-mcp 확장판 기동 — 기존 8개 + 법제처 11개 도구")
 
     # mcp.run() 대신 앱을 직접 만들어 접근 토큰 게이트를 한 겹 두른다.
     # (mcp.run(transport="streamable-http")이 내부적으로 하던 것과 동일한 구성)

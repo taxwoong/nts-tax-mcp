@@ -26,6 +26,7 @@ _CACHE_MAX = 16    # 전문 XML이 커서(수십만 자) 항목 수로 메모리
 _cache = {}        # key -> (만료시각, 응답텍스트)
 
 _TAG_RE = re.compile(r"<([^/>\s]+)>\s*(.*?)\s*</\1>", re.S)
+_NTS_CASE_NO_RE = re.compile(r"^[가-힣]+-\d{4}-[가-힣]+-\d+$")  # 국세청 판례 표기
 
 
 class LawGoKrError(Exception):
@@ -98,9 +99,9 @@ class LawGoKrClient:
         xml = _get("lawSearch.do", **params)
         items = _parse_items(xml, "prec")
         total = re.search(r"<totalCnt>(\d+)</totalCnt>", xml)
-        out = {
-            "total": int(total.group(1)) if total else len(items),
-            "cases": [{
+        cases = []
+        for it in items:
+            row = {
                 "판례일련번호": it.get("판례일련번호", ""),
                 "사건명": it.get("사건명", ""),
                 "사건번호": it.get("사건번호", ""),
@@ -108,22 +109,45 @@ class LawGoKrClient:
                 "선고일자": it.get("선고일자", ""),
                 "판결유형": it.get("판결유형", ""),
                 "사건종류명": it.get("사건종류명", ""),
-            } for it in items],
-        }
+            }
+            # 법제처 DB에는 국세법령정보시스템이 넘겨준 판례가 섞여 있다('서울고등법원-2022-누-45199'
+            # 꼴, 법원명 빈칸). 이들은 lawService가 본문을 주지 않는다(2026-10-04 실측).
+            if _NTS_CASE_NO_RE.match(row["사건번호"]) and not row["법원명"]:
+                row["본문조회"] = (f"국세청 제공 판례라 court_case_detail로는 열리지 않음 — "
+                                 f"nts_ruling_get_full_text('{row['사건번호']}')로 전문 조회")
+            cases.append(row)
+        out = {"total": int(total.group(1)) if total else len(items), "cases": cases}
         if not out["cases"]:
             out["status"] = "NOT_FOUND"
         return out
 
-    def get_case(self, case_serial: str, max_chars: int = 8000):
-        """target=prec 판례 본문. case_serial = 판례일련번호."""
+    def get_case(self, case_serial: str, max_chars: int = 8000, start_char: int = 0):
+        """target=prec 판례 본문. case_serial = 판례일련번호.
+        판례내용은 max_chars씩 잘라 주고, 잘리면 이어 읽을 start_char를 안내한다."""
         xml = _get("lawService.do", target="prec", ID=case_serial)
         d = {}
         for tag in ("사건명", "사건번호", "법원명", "선고일자", "판시사항", "판결요지", "참조조문", "참조판례", "판례내용"):
             m = re.search(rf"<{tag}>(.*?)</{tag}>", xml, re.S)
             if m:
-                d[tag] = _strip_tags(_strip_cdata(m.group(1)))[: max_chars if tag == "판례내용" else 4000]
+                d[tag] = _strip_tags(_strip_cdata(m.group(1)))
         if not d:
-            raise LawGoKrNotFound(f"판례 본문 없음 (일련번호 {case_serial}) — 응답 앞부분: {xml[:200]}")
+            raise LawGoKrNotFound(
+                f"판례 본문 없음 (일련번호 {case_serial}) — court_case_search 결과의 사건번호가 "
+                f"'서울고등법원-2022-누-45199' 꼴(법원명 빈칸)이면 국세청 제공 판례이므로 "
+                f"nts_ruling_get_full_text(사건번호)로 조회하세요. 응답 앞부분: {xml[:200]}")
+        for tag in ("판시사항", "판결요지", "참조조문", "참조판례"):
+            if tag in d and len(d[tag]) > 4000:
+                d[tag] = d[tag][:4000] + " …(4000자 이후 생략)"
+        body = d.pop("판례내용", None)
+        if body is not None:
+            total = len(body)
+            end = min(start_char + max_chars, total)
+            d["판례내용"] = body[start_char:end]
+            d["판례내용_전체자수"] = total
+            if end < total or start_char:
+                d["잘림"] = (f"판례내용 전체 {total}자 중 {start_char}~{end}자만 표시됨 — "
+                            f"이어 읽으려면 start_char={end}로 다시 조회 "
+                            f"(또는 max_chars를 {total} 이상으로 지정)")
         return d
 
     # ---------- 법령해석례 (법제처) ----------
@@ -431,6 +455,120 @@ class LawGoKrClient:
             out["안내"] = (f"전체 {len(units)}건 중 최신 {len(rows)}건만 표시 — recent를 늘리거나, "
                          f"특정 개정의 부칙 전문은 promul_no로, 특정 조문의 적용시기는 "
                          f"article_no로 조회")
+        return out
+
+    # ---------- 제정·개정이유 ----------
+    @staticmethod
+    def _cdata_block(xml: str, tag: str) -> str:
+        """<tag>의 CDATA 조각들을 이어 글로. 조각 사이 빈 줄은 하나로 줄인다."""
+        m = re.search(rf"<{tag}>(.*?)</{tag}>", xml, re.S)
+        if not m:
+            return ""
+        text = "".join(re.findall(r"<!\[CDATA\[(.*?)\]\]>", m.group(1), re.S)) or m.group(1)
+        text = html.unescape(text)
+        text = re.sub(r"[ \t]+\n", "\n", text)
+        return re.sub(r"\n{2,}", "\n", text).strip()
+
+    def _resolve_law_id(self, law_name: str) -> str:
+        """법령명과 정확히 일치하는 현행 법령의 법령ID — 같은 이름의 시행령·시행규칙 혼입 방지."""
+        rows = self.search_laws(law_name)
+        exact = [r for r in rows if r.get("법령명") == law_name.strip()]
+        return exact[0]["법령ID"] if exact else ""
+
+    def law_revision_reason(self, law_name: str, law_id: str = "", promul_no: str = "",
+                            year: str = "", include_amendment_text: bool = False,
+                            max_chars: int = 6000):
+        """법령 제정·개정이유 — 각 시행본 원문(lawService target=law&MST)에 딸린
+        <제개정이유>(◇개정이유 / ◇주요내용)를 꺼낸다. 국가법령정보센터 화면의
+        '제정·개정이유' 탭과 같은 자료다.
+
+        - promul_no: 공포번호 (쉼표로 여러 개, 예: "4981,10410"). "제정"도 받는다.
+        - year: 공포연도 (쉼표로 여러 개, 예: "2011,2019") — 그해 공포된 개정 전부
+        - 둘 다 없으면: 개정 목록(공포일자·공포번호·제개정구분)만 최신순으로 반환
+        """
+        if not law_name:
+            raise LawGoKrError("law_name은 필수입니다")
+        law_id = law_id or self._resolve_law_id(law_name)
+        history = self.law_history(law_name, law_id=law_id)
+        if not law_id:  # 법령ID를 못 정하면 이름으로라도 본법만 남긴다
+            history = [r for r in history
+                       if r["법령명"].replace(" ", "") == law_name.replace(" ", "")]
+        if not history:
+            raise LawGoKrNotFound(f"연혁 시행본 없음: {law_name}")
+
+        # 한 공포본이 조문별 단계 시행 때문에 여러 시행본 행으로 반복된다 — 공포번호당 하나
+        by_no = {}
+        for r in history:  # 시행일자 오름차순 → 가장 이른 시행본이 남는다
+            by_no.setdefault((r["공포번호"] or "").lstrip("0"), r)
+        acts = sorted(by_no.values(), key=lambda r: (r["공포일자"], (r["공포번호"] or "").zfill(10)))
+
+        want_nos = [p.strip() for p in str(promul_no).split(",") if p.strip()]
+        want_years = [y.strip() for y in str(year).split(",") if y.strip()]
+        out = {"법령명": acts[-1]["법령명"], "법령ID": law_id or acts[-1]["법령ID"],
+               "개정횟수": len(acts)}
+
+        if not want_nos and not want_years:
+            out["개정목록_최신순"] = [
+                {"공포일자": r["공포일자"], "공포번호": (r["공포번호"] or "").lstrip("0"),
+                 "제개정구분": r["제개정구분"], "법령명": r["법령명"]}
+                for r in reversed(acts)]
+            out["안내"] = ("개정이유 본문은 promul_no(공포번호, '제정' 가능) 또는 year(공포연도)를 "
+                         "지정해 다시 조회하세요. 쉼표로 여러 개를 한 번에 받을 수 있습니다.")
+            return out
+
+        chosen, missing = [], []
+        for p in want_nos:
+            if p == "제정":
+                hit = [r for r in acts if r["제개정구분"] == "제정"] or acts[:1]
+            else:
+                hit = [r for r in acts if (r["공포번호"] or "").lstrip("0") == p.lstrip("0")]
+            (chosen.extend(hit) if hit else missing.append(f"공포번호 {p}"))
+        for y in want_years:
+            if not re.match(r"^\d{4}$", y):
+                raise LawGoKrError(f"year 형식 오류: '{y}' (YYYY)")
+            hit = [r for r in acts if r["공포일자"].startswith(y)]
+            (chosen.extend(hit) if hit else missing.append(f"{y}년"))
+        seen, picked = set(), []
+        for r in chosen:
+            if r["MST"] not in seen:
+                seen.add(r["MST"])
+                picked.append(r)
+        picked.sort(key=lambda r: (r["공포일자"], (r["공포번호"] or "").zfill(10)))
+        if len(picked) > 10:
+            raise LawGoKrError(f"해당 개정이 {len(picked)}건이라 너무 많습니다 — 10건 이하로 "
+                               f"좁혀 주세요 (공포번호로 지정 권장)")
+
+        rows = []
+        for r in picked:
+            xml = _get("lawService.do", target="law", MST=r["MST"])
+            reason = self._cdata_block(xml, "제개정이유내용")
+            row = {"공포일자": r["공포일자"], "공포번호": (r["공포번호"] or "").lstrip("0"),
+                   "제개정구분": r["제개정구분"], "시행일자": r["시행일자"],
+                   "법령명": r["법령명"], "MST": r["MST"]}
+            amend = self._cdata_block(xml, "개정문내용")
+            if r["제개정구분"] == "타법개정":
+                other = re.search(r"⊙\S+ 제\d+호(?:\([\d.]+\))?\s+(.+?)\s*(?:\n|$)", amend)
+                row["주의"] = ("다른 법령의 제정·개정에 딸려 고쳐진 개정(타법개정)입니다. 아래 "
+                             "개정이유는 그 법령" + (f"({other.group(1).strip()})" if other else "")
+                             + "의 것이며, 이 법령이 어떻게 바뀌었는지는 개정문에 있습니다.")
+            row["개정이유"] = reason[:max_chars] if reason else ""
+            if not reason:
+                row["비고"] = "원천(법제처)에 이 개정의 제·개정이유가 수록되어 있지 않습니다."
+            elif len(reason) > max_chars:
+                row["잘림"] = (f"개정이유 전체 {len(reason)}자 중 앞 {max_chars}자만 표시됨 — "
+                             f"max_chars를 {len(reason)} 이상으로 지정해 다시 조회")
+            if include_amendment_text or r["제개정구분"] == "타법개정":
+                # 타법개정은 개정문(이 법의 어느 조문을 어떻게 고쳤는지)이 사실상 유일한 설명
+                row["개정문"] = amend[:max_chars]
+                if len(amend) > max_chars:
+                    row["개정문_잘림"] = f"개정문 전체 {len(amend)}자 중 앞 {max_chars}자만 표시됨"
+            rows.append(row)
+        out["개정이유"] = rows
+        if missing:
+            out["찾지못함"] = missing
+        if not rows:
+            raise LawGoKrNotFound(f"지정한 개정을 연혁에서 찾지 못함: {', '.join(missing)} — "
+                                  f"promul_no·year 없이 호출하면 개정 목록을 볼 수 있습니다")
         return out
 
     # ---------- 행정규칙 (훈령·예규·고시·기본통칙) ----------

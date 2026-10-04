@@ -23,6 +23,7 @@ v2 개선사항:
 
 import json
 import logging
+import re
 import time
 from typing import Optional
 
@@ -97,6 +98,29 @@ TAX_TYPE_CODES = {
 
 DEFAULT_CACHE_TTL = 300
 DEFAULT_MIN_INTERVAL = 0.5
+
+# 법원 사건번호 표기 — 국세청은 '서울고등법원-2022-누-45199'로 싣지만 인용은 보통
+# '2022누45199', '서울고법 2022누45199'처럼 한다. 정확 일치만 보면 실존 판결을 못 찾는다.
+_COURT_ABBR = (("고법", "고등법원"), ("지법", "지방법원"), ("행법", "행정법원"), ("가법", "가정법원"))
+_COURT_CASE_KINDS = {"누", "구합", "구단", "구", "두", "다", "나", "가합", "가단", "도", "노",
+                     "고합", "고단", "재누", "재두", "재구합", "후", "허", "카합"}
+_COURT_CASE_RE = re.compile(r"^(.*?)(\d{4})([가-힣]{1,3})(\d+)$")
+
+
+def _split_court_case(doc_no: str):
+    """법원 사건번호면 (법원명, '2022누45199')을, 아니면 None. 법원명 축약은 펼친다."""
+    m = _COURT_CASE_RE.match(normalize_doc_no(doc_no))
+    if not m or m.group(3) not in _COURT_CASE_KINDS:
+        return None
+    court = m.group(1)
+    if court and not re.search(r"(법원|지원|고법|지법|행법|가법|대법)$", court):
+        return None  # '조심', '서면' 등 — 법원 사건이 아님
+    for short, full in _COURT_ABBR:
+        if court.endswith(short):
+            court = court[: -len(short)] + full
+    if court == "대법":
+        court = "대법원"
+    return court, m.group(2) + m.group(3) + m.group(4)
 
 
 class NtsParseError(Exception):
@@ -305,27 +329,50 @@ class NtsTaxLawClient:
         (별도 상세조회 전용 API 엔드포인트는 확인되지 않아 검색 기반으로 구현했습니다.)
         1차 시도에서 못 찾으면 결과 수를 늘려 한 번 더 시도합니다.
         """
-        for attempt_view_count in (view_count, max(view_count, 50)):
-            result = self.search(
-                keyword=doc_no,
-                collections=["question", "precedent"],
-                view_count=attempt_view_count,
-                use_cache=True,
-            )
+        # 표기 차이(하이픈·띄어쓰기)로 실존 문서를 놓치면 status NOT_FOUND가
+        # '자료 부존재'로 해석되므로, verify_citations와 같은 정규화 기준으로 비교한다
+        want = normalize_doc_no(doc_no)
+        case = _split_court_case(doc_no)
+        keywords = [doc_no]
+        if case and case[1] != doc_no.strip():
+            keywords.append(case[1])  # '서울고법 2022누45199'는 사건번호만으로 검색해야 걸린다
+        loose = {}
+        for keyword in keywords:
+            for attempt_view_count in (view_count, max(view_count, 50)):
+                result = self.search(
+                    keyword=keyword,
+                    collections=["question", "precedent"],
+                    view_count=attempt_view_count,
+                    use_cache=True,
+                )
+                matched = []
+                for coll_name, coll_data in result.items():
+                    if not isinstance(coll_data, dict):  # status·_guidance 등 메타 키 스킵
+                        continue
+                    for item in coll_data.get("items", []):
+                        if not item.get("doc_no"):
+                            continue
+                        norm = normalize_doc_no(item["doc_no"])
+                        if norm == want:
+                            matched.append(item)
+                        elif case and self._court_case_match(norm, case):
+                            loose.setdefault(item["doc_no"], item)
+                if matched:
+                    return {"status": "OK", "found": True, "items": matched}
+                if loose:
+                    break
+            if loose:
+                break
 
-            # 표기 차이(하이픈·띄어쓰기)로 실존 문서를 놓치면 status NOT_FOUND가
-            # '자료 부존재'로 해석되므로, verify_citations와 같은 정규화 기준으로 비교한다
-            want = normalize_doc_no(doc_no)
-            matched = []
-            for coll_name, coll_data in result.items():
-                if not isinstance(coll_data, dict):  # status·_guidance 등 메타 키 스킵
-                    continue
-                for item in coll_data.get("items", []):
-                    if item.get("doc_no") and normalize_doc_no(item["doc_no"]) == want:
-                        matched.append(item)
-
-            if matched:
-                return {"status": "OK", "found": True, "items": matched}
+        if len(loose) == 1:
+            return {"status": "OK", "found": True, "items": list(loose.values()),
+                    "일치방식": f"사건번호 일치 — 국세청 표기는 '{next(iter(loose))}'"}
+        if loose:
+            # 같은 사건번호가 여러 법원에 있다 (예: 2019구합5926 = 제주지법·울산지법)
+            return {"status": "OK", "found": True, "ambiguous": True,
+                    "items": list(loose.values()),
+                    "message": (f"사건번호 '{case[1]}'가 여러 법원에 있습니다: "
+                                f"{', '.join(loose)} — 법원명을 포함한 문서번호로 다시 조회하세요.")}
 
         return {
             "status": "NOT_FOUND",
@@ -337,6 +384,18 @@ class NtsTaxLawClient:
                 "일반 키워드 검색(search)을 이용해 보세요."
             ),
         }
+
+    @staticmethod
+    def _court_case_match(norm: str, case) -> bool:
+        """정규화된 국세청 문서번호가 (법원명, 사건번호)와 같은 사건인지.
+        사건번호는 접미 일치(앞자리 숫자 경계 확인), 법원명은 입력에 있을 때만 비교."""
+        court, number = case
+        if not norm.endswith(number):
+            return False
+        head = norm[: -len(number)]
+        if head and head[-1].isdigit():  # '2022누45199'가 '…12022누45199'에 걸리지 않게
+            return False
+        return not court or head == court
 
     # -----------------------------------------------------------------------
     # 붙임 전문 조회
@@ -448,6 +507,9 @@ class NtsTaxLawClient:
         found = self.get_by_doc_no(doc_no)
         if not found.get("found"):
             return found
+        if found.get("ambiguous"):
+            return {"status": "INVALID_INPUT", "오류": found["message"],
+                    "후보": [it.get("doc_no") for it in found["items"]]}
 
         item = found["items"][0]
         file_id = item.get("file_id")
@@ -495,6 +557,12 @@ class NtsTaxLawClient:
 
         text = got["text"]
         total = len(text)
+        unknown = text.count("�")
+        if unknown:
+            sym_note = (f"본문의 '�' {unknown}곳은 한컴 전용 기호(글머리표·원문자 등)라 표준 "
+                        f"문자로 바꾸지 못한 자리입니다. 기호 하나가 한 글자로 표시된 것이며 "
+                        f"본문 글자가 빠진 것은 아닙니다.")
+            note = f"{note} / {sym_note}" if note else sym_note
         if note:
             out["비고"] = note
         out["전문자수"] = total

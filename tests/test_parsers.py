@@ -584,6 +584,132 @@ def test_hwp_para_text_skips_control_chars():
     assert _para_text(data) == "첫줄\n둘째줄", repr(_para_text(data))
 
 
+def test_hwp_para_text_joins_surrogates_and_maps_pua():
+    """한컴 기호(U+F0000 이상)를 코드 유닛마다 chr()하면 짝 잃은 서로게이트 2개가 남아
+    클라이언트가 '인코딩 오류로 2자 확인 불가'로 읽는다 (서울고등법원-2022-누-45199 실측)."""
+    import json as _json
+    from hwp_text import _para_text, PUA_UNKNOWN
+
+    def pua(cp):
+        return chr(cp).encode("utf-16-le")
+
+    # ❶ = U+10ECD4 (법제처 판례 본문 대조로 확정)
+    data = _utf16("가) 관련 규정 ") + pua(0x10ECD4) + _utf16("구 국조법 제17조")
+    text = _para_text(data)
+    assert text == "가) 관련 규정 ❶구 국조법 제17조", repr(text)
+    _json.dumps(text, ensure_ascii=False).encode("utf-8")  # 서로게이트가 남으면 여기서 실패
+
+    # 매핑 없는 기호는 한 글자 대체문자로 — 두 글자로 쪼개지거나 사라지면 안 된다
+    text = _para_text(_utf16("▣ 제조업 ") + pua(0x10EB44) + _utf16(" 정의"))
+    assert text == f"▣ 제조업 {PUA_UNKNOWN} 정의", repr(text)
+
+    # BMP 영역 한컴 기호도 같은 표를 탄다
+    text = _para_text(_utf16("이하 ") + pua(0xF0852) + _utf16("특수관계자") + pua(0xF0853))
+    assert text == "이하 “특수관계자”", repr(text)
+
+
+def test_full_text_notes_unknown_symbols():
+    """대체문자만 두면 LLM이 '본문 일부 누락'으로 보고한다 — 기호 자리라는 안내가 붙어야 한다."""
+    import hwp_text
+    from nts_tax_ruling_search import NtsTaxLawClient
+
+    client = NtsTaxLawClient()
+    client.get_attachment_meta = lambda fid: [{"fleDwldUri": "/x", "fleXsnNm": "hwp"}]
+    client.download_attachment = lambda uri: b"hwp"
+    client.get_by_doc_no = lambda d: {"found": True, "items": [{"doc_no": d, "file_id": "1"}]}
+    orig = hwp_text.extract_text
+    hwp_text.extract_text = lambda data: f"▣ 제조업\n{hwp_text.PUA_UNKNOWN} 정의"
+    try:
+        got = client.get_full_text("수원지방법원-2018-구합-66211")
+        assert got["status"] == "OK" and "한컴 전용 기호" in got.get("비고", ""), got
+    finally:
+        hwp_text.extract_text = orig
+
+
+def test_court_case_number_forms():
+    """'2014구합56994'·'서울행법 2014구합56994'로 넣으면 국세청 표기('서울행정법원-2014-구합-56994')와
+    정확 일치가 안 돼 실존 판결을 '확보 못함'으로 끝냈다."""
+    from nts_tax_ruling_search import NtsTaxLawClient, _split_court_case
+
+    assert _split_court_case("2014구합56994") == ("", "2014구합56994")
+    assert _split_court_case("서울행법 2014구합56994") == ("서울행정법원", "2014구합56994")
+    assert _split_court_case("울산지법 2019구합5926") == ("울산지방법원", "2019구합5926")
+    assert _split_court_case("대법 2016두30965") == ("대법원", "2016두30965")
+    assert _split_court_case("조심-2019-서-1422") is None  # 심판례는 법원 사건이 아니다
+    assert _split_court_case("서면-2019-법규재산-4276") is None
+
+    client = NtsTaxLawClient()
+    docs = ["제주지방법원-2019-구합-5926", "울산지방법원-2019-구합-5926", "서울행정법원-2014-구합-56994"]
+    client.search = lambda **kw: {"precedent": {"items": [
+        {"doc_no": d, "file_id": "1"} for d in docs]}}
+
+    got = client.get_by_doc_no("2014구합56994")
+    assert got["found"] and got["items"][0]["doc_no"] == "서울행정법원-2014-구합-56994", got
+    got = client.get_by_doc_no("울산지법 2019구합5926")
+    assert got["found"] and not got.get("ambiguous"), got
+    assert got["items"][0]["doc_no"] == "울산지방법원-2019-구합-5926", got
+    # 법원 없이 번호만 — 두 법원에 같은 번호가 있으면 아무거나 고르지 말고 후보를 돌려준다
+    got = client.get_full_text("2019구합5926")
+    assert got["status"] == "INVALID_INPUT" and len(got["후보"]) == 2, got
+    # 숫자 경계 — '2019구합592'가 '…5926'에 걸리면 안 된다
+    assert not client.get_by_doc_no("2019구합592")["found"]
+
+
+def test_court_case_detail_reports_truncation():
+    """판례내용을 max_chars에서 말없이 자르면 뒷부분이 없는 줄 안다."""
+    import law_go_kr
+    xml = ("<PrecService><사건번호>2022누45199</사건번호><법원명>서울고등법원</법원명>"
+           "<판례내용><![CDATA[" + "가" * 100 + "]]></판례내용></PrecService>")
+    orig = law_go_kr._get
+    law_go_kr._get = lambda endpoint, **p: xml
+    try:
+        d = law_go_kr.LawGoKrClient().get_case("1", max_chars=30)
+        assert len(d["판례내용"]) == 30 and d["판례내용_전체자수"] == 100, d
+        assert "start_char=30" in d["잘림"], d
+        d = law_go_kr.LawGoKrClient().get_case("1", max_chars=30, start_char=90)
+        assert len(d["판례내용"]) == 10, d
+    finally:
+        law_go_kr._get = orig
+
+
+def test_law_revision_reason_offline():
+    """개정이유는 시행본 XML마다 들어 있는데 꺼내는 도구가 없어 '원문 미확보'로 끝났다."""
+    import law_go_kr
+
+    history = [
+        {"법령명": "가법", "법령ID": "1", "MST": "10", "시행일자": "19960101",
+         "공포일자": "19951206", "공포번호": "04981", "제개정구분": "제정"},
+        {"법령명": "가법", "법령ID": "1", "MST": "20", "시행일자": "20120101",
+         "공포일자": "20111231", "공포번호": "11126", "제개정구분": "일부개정"},
+        {"법령명": "가법", "법령ID": "1", "MST": "21", "시행일자": "20130101",  # 같은 공포본 단계 시행
+         "공포일자": "20111231", "공포번호": "11126", "제개정구분": "일부개정"},
+        {"법령명": "가법", "법령ID": "1", "MST": "30", "시행일자": "20110714",
+         "공포일자": "20110714", "공포번호": "10854", "제개정구분": "타법개정"},
+    ]
+    xmls = {
+        "10": "<제개정이유내용><![CDATA[[신규제정]]]><![CDATA[\n]]><![CDATA[  제정 이유.]]></제개정이유내용>",
+        "20": "<제개정이유내용><![CDATA[◇ 개정이유]]><![CDATA[\n]]><![CDATA[  배당간주.]]></제개정이유내용>",
+        "30": ("<개정문내용><![CDATA[⊙법률 제10854호(2011.7.14)]]><![CDATA[\n]]>"
+               "<![CDATA[금융실명거래 및 비밀보장에 관한 법률 일부개정법률\n]]></개정문내용>"
+               "<제개정이유내용><![CDATA[다른 법 이유]]></제개정이유내용>"),
+    }
+    client = law_go_kr.LawGoKrClient()
+    client.law_history = lambda name, law_id="": sorted(history, key=lambda r: r["시행일자"])
+    orig = law_go_kr._get
+    law_go_kr._get = lambda endpoint, **p: xmls[p["MST"]]
+    try:
+        out = client.law_revision_reason("가법", law_id="1")
+        assert out["개정횟수"] == 3 and "개정목록_최신순" in out, out  # 단계 시행 중복은 하나로
+        out = client.law_revision_reason("가법", law_id="1", promul_no="제정", year="2011")
+        rows = out["개정이유"]
+        assert [r["공포번호"] for r in rows] == ["4981", "10854", "11126"], rows
+        assert rows[0]["개정이유"] == "[신규제정]\n  제정 이유.", rows[0]
+        assert "금융실명거래" in rows[1]["주의"] and "개정문" in rows[1], rows[1]
+        assert "주의" not in rows[2], rows[2]
+    finally:
+        law_go_kr._get = orig
+
+
 def test_hwp_record_extended_size():
     """4095바이트 넘는 문단은 확장 크기 헤더를 쓴다 — 못 읽으면 긴 결정문이 통째로 깨진다."""
     from hwp_text import _iter_records, HWPTAG_PARA_TEXT

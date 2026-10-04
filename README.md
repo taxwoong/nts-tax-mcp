@@ -2,14 +2,14 @@
 
 **한국 세법·법령 통합 검색 MCP 서버.** 국세청 국세법령정보시스템(taxlaw.nts.go.kr),
 지방세법령정보시스템(olta.re.kr), 법제처 국가법령정보센터(law.go.kr)를 하나의 커넥터로
-묶어 **도구 18개**로 검색합니다. 심판례·판례·질의회신은 결정문 **전문**(붙임 HWP)까지,
+묶어 **도구 19개**로 검색합니다. 심판례·판례·질의회신은 결정문 **전문**(붙임 HWP)까지,
 법령은 조문·부칙·조문 개정 diff까지 Claude 채팅에서 바로 조회하고, 인용한 문서번호의
 실존 여부까지 검증합니다.
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![MCP](https://img.shields.io/badge/MCP-streamable--http-black)
-![tools](https://img.shields.io/badge/tools-18-brightgreen)
-![status](https://img.shields.io/badge/version-v5.6-informational)
+![tools](https://img.shields.io/badge/tools-19-brightgreen)
+![status](https://img.shields.io/badge/version-v5.7-informational)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
 ```bash
@@ -34,14 +34,14 @@ python server_ext.py          # http://0.0.0.0:8000/mcp (포트는 PORT 환경�
 | **법령정보** | 대법원·하급심 판례, 법령 연혁 · 특정 시점 조문 · 조문 개정 diff · 부칙(시행일·적용례), 법령해석례, 행정규칙(기본통칙 등), 조세조약, 자치법규(조례) | `LAW_API_OC` |
 
 - **키 없이** `python server.py` → 국세·지방세 도구 **8개**가 바로 동작합니다.
-- **법령정보 10개**를 더 쓰려면 `server_ext.py`로 실행하고 `LAW_API_OC`를 설정하세요.
+- **법령정보 11개**를 더 쓰려면 `server_ext.py`로 실행하고 `LAW_API_OC`를 설정하세요.
   [open.law.go.kr](https://open.law.go.kr)에서 무료로 발급받는 기관코드이며, **등록한
   IP에서만** 동작하므로 서버 공인 IP를 사전 등록해야 합니다. 미설정 시 법령정보 도구만
   `AUTH_ERROR`를 반환하고 나머지 8개는 정상 동작합니다.
 
-## 제공 도구 (18개)
+## 제공 도구 (19개)
 
-실제 운영 서버는 `server_ext.py`로 구동되어 18개가 모두 열려 있습니다.
+실제 운영 서버는 `server_ext.py`로 구동되어 19개가 모두 열려 있습니다.
 모든 응답에는 `status` 필드가 포함됩니다 — `OK` / `NOT_FOUND`(결과 없음, **부존재 판단 가능**)
 / `UPSTREAM_ERROR`·`PARSE_ERROR`(원천 접근·해석 실패, **부존재 단정 금지**) / `AUTH_ERROR` /
 `INVALID_INPUT`. 파라미터 상세는 [도구 파라미터 참고](#도구-파라미터-참고)에 있습니다.
@@ -59,7 +59,7 @@ python server_ext.py          # http://0.0.0.0:8000/mcp (포트는 PORT 환경�
 | `nts_and_olta_precedent_search` | 국세+지방세 조세심판원 계열을 한 번에, 중복 제거해서 검색 |
 | `verify_citations` | 인용된 문서번호(국세·지방세) 실존 여부 일괄 검증 — 인용 환각 방지 (v5.4) |
 
-### 확장 10개 (법제처 law.go.kr, `server_ext.py`에서만 추가)
+### 확장 11개 (법제처 law.go.kr, `server_ext.py`에서만 추가)
 
 | 도구 | 용도 |
 |---|---|
@@ -70,6 +70,7 @@ python server_ext.py          # http://0.0.0.0:8000/mcp (포트는 PORT 환경�
 | `law_article_as_of` | 특정 날짜 시행 중이던 법령 조문 원문 (예규·판례 인용 당시 조문 확인용) + 조문별 시행일자 |
 | `law_article_diff` | 조문 개정 diff(신구조문 대비) + 현행 문안 시작 시점 특정 + 개정 부칙 연결 (v5.4) |
 | `law_addenda_search` | 법령 부칙(시행일·적용례·경과조치) — 목록/특정 개정 전문/특정 조문 적용시기 발췌 |
+| `law_revision_reason` | 법령 제정·개정이유(◇개정이유·◇주요내용) 원문 — 공포번호·공포연도로 지정, 제정부터 수록 (v5.7) |
 | `admin_rule_search` | 행정규칙(훈령·예규·고시 — 기본통칙·조사사무처리규정 등) 검색/본문 조회 |
 | `treaty_search` | 조약(조세조약) 검색/본문 조회 — 원문·발효일 확인 |
 | `ordinance_search` | 자치법규(조례·규칙 — 지방세 탄력세율·감면조례 등) 검색/본문 조회, 지자체 필터 |
@@ -100,7 +101,7 @@ Claude 채팅에서 자연어로 물어보면 됩니다.
 pip install -r requirements.txt
 
 python server.py         # 기본 8개 (국세·지방세·인용검증) — 키 불필요
-python server_ext.py     # 18개 (기본 8개 + 법제처 10개) — LAW_API_OC 필요
+python server_ext.py     # 19개 (기본 8개 + 법제처 11개) — LAW_API_OC 필요
 ```
 
 기본적으로 `http://0.0.0.0:8000/mcp` 에서 streamable-http 방식으로 서비스됩니다.
@@ -110,7 +111,7 @@ python server_ext.py     # 18개 (기본 8개 + 법제처 10개) — LAW_API_OC 
 PORT=8765 python server_ext.py
 ```
 
-`server_ext.py`는 `from server import mcp`로 기본 8개를 그대로 물려받고 법제처 10개를
+`server_ext.py`는 `from server import mcp`로 기본 8개를 그대로 물려받고 법제처 11개를
 추가 등록하는 구조라, `server.py` 자체는 수정되지 않습니다. 기본 8개만 필요하면
 `server.py`를 그대로 실행하면 됩니다.
 
@@ -127,14 +128,14 @@ PORT=8765 python server_ext.py
 | `NTS_AUTH_MODE` | 자동 | 접근 토큰 게이트 모드 `off`/`warn`/`enforce` — [접근 제한](#접근-제한-사무실-인원만-쓰게-하기) 참고 |
 | `NTS_PUBLIC_BASE` | 없음 | 외부 공개 주소(예: `https://<서버주소>`). 설정하면 `auth_gate.py add`가 완성된 URL을 출력 |
 | `LOG_LEVEL` | INFO | 로깅 레벨 (DEBUG로 두면 세션 재접속/캐시 히트 등이 상세히 찍힘) |
-| `LAW_API_OC` | 없음 (필수) | `server_ext.py` 전용. law.go.kr 가입 시 발급받는 기관코드 — 미설정시 법제처 10개 도구가 `AUTH_ERROR`를 반환. 이 코드로 등록된 IP에서만 동작 (`open.law.go.kr` → OpenAPI 신청내역에서 서버 공인 IP 사전 등록 필요). 개인 식별정보이므로 소스에 직접 적지 말고 배포 환경에서 주입할 것 |
+| `LAW_API_OC` | 없음 (필수) | `server_ext.py` 전용. law.go.kr 가입 시 발급받는 기관코드 — 미설정시 법제처 11개 도구가 `AUTH_ERROR`를 반환. 이 코드로 등록된 IP에서만 동작 (`open.law.go.kr` → OpenAPI 신청내역에서 서버 공인 IP 사전 등록 필요). 개인 식별정보이므로 소스에 직접 적지 말고 배포 환경에서 주입할 것 |
 
 ## 상시 운영
 
 ### 서버컴퓨터 상시 구동 + Tailscale Funnel (현재 운영 방식, 2026-08~)
 
 Railway 크레딧 소진으로 서버가 다운된 뒤(2026-08-08), 자체 서버컴퓨터에서 상시 구동하는
-방식으로 전환했습니다. 18개 도구(`server_ext.py`)가 이 방식으로 운영됩니다.
+방식으로 전환했습니다. 19개 도구(`server_ext.py`)가 이 방식으로 운영됩니다.
 
 1. 서버컴퓨터 관리자 PowerShell에서 `setup.ps1` 1회 실행 — GitHub에서 소스를 받아
    의존성을 설치하고, Windows 작업 스케줄러에 `nts-tax-mcp`(부팅 시 SYSTEM 권한 자동 실행)를
@@ -146,7 +147,7 @@ Railway 크레딧 소진으로 서버가 다운된 뒤(2026-08-08), 자체 서�
 2. `run_server.bat`이 `PORT=8734`를 설정하고 `server_ext.py`를 실행합니다 (로그:
    `server.log`). `LAW_API_OC`는 이 파일에 직접 적지 않고, `.gitignore`된 로컬 파일
    (`local_env.bat` — `set LAW_API_OC=본인_기관코드` 한 줄)에서 불러옵니다. 이 파일이
-   없으면 법제처 10개 도구만 동작하지 않고 기본 8개는 정상입니다.
+   없으면 법제처 11개 도구만 동작하지 않고 기본 8개는 정상입니다.
 3. [Tailscale](https://tailscale.com)을 설치해 로그인 후 Funnel로 외부에 고정 주소로 노출합니다.
    ```powershell
    tailscale funnel --bg 8734
@@ -193,7 +194,7 @@ python auth_gate.py revoke 홍길동   # 그 사람 URL만 무효화 (서버 재
 ### Railway 배포 (레거시)
 
 `Procfile`은 여전히 `python server.py`를 실행하므로, Railway로 배포하면 **기본 8개
-도구만** 뜨고 법제처 10개 도구(`server_ext.py`)는 포함되지 않습니다. 크레딧이 소진되면
+도구만** 뜨고 법제처 11개 도구(`server_ext.py`)는 포함되지 않습니다. 크레딧이 소진되면
 서버가 그대로 죽으므로 현재는 권장하지 않지만, 여전히 동작은 합니다.
 
 1. 이 폴더를 GitHub 저장소로 올립니다.
@@ -270,7 +271,7 @@ python nts_search.py "조정대상지역" -c precedent -n 10
 ```
 nts-tax-mcp/
 ├── server.py                    # MCP 서버 본체 (FastMCP) — 기본 도구 8개 (국세+지방세+인용검증)
-├── server_ext.py                # 확장 진입점 — server.py 8개 + 법제처 10개 = 18개 도구
+├── server_ext.py                # 확장 진입점 — server.py 8개 + 법제처 11개 = 19개 도구
 ├── nts_tax_ruling_search.py     # 국세: taxlaw.nts.go.kr 검색 클라이언트
 ├── olta_tax_ruling_search.py    # 지방세: olta.re.kr 검색 클라이언트
 ├── law_go_kr.py                 # 법령정보: law.go.kr Open API 클라이언트 (판례/법령/해석례/행정규칙/조약/자치법규)
@@ -350,6 +351,11 @@ nts-tax-mcp/
 |---|---|
 | 붙임이 HWP가 아님(PDF 등) | `status=PARSE_ERROR` + 형식 안내 — **자료 부존재가 아닙니다** |
 | 붙임이 글자 없는 빈 HWP (주로 오래된 질의회신·일부 기재부 회신) | 검색 결과 본문을 `전문`으로 대신 주고 `비고`로 알림. 그것도 없으면 `NOT_FOUND` |
+| 본문에 한컴 전용 기호(PUA)가 있음 | 뜻이 확인된 기호(❶❷❸, 「 」, “ ”, ·)는 표준 문자로 바꾸고, 나머지는 `�` 한 글자로 두며 `비고`에 "기호 자리이고 글자 누락이 아님"을 알림 (v5.7) |
+| 같은 사건번호가 여러 법원에 있음 (예: `2019구합5926` = 제주·울산) | `status=INVALID_INPUT` + `후보` 목록 — 법원명을 붙여 다시 조회 (v5.7) |
+
+판결은 국세청 표기(`서울고등법원-2022-누-45199`) 외에 `2022누45199`, `서울고법 2022누45199`처럼
+인용하는 대로 넣어도 찾습니다(v5.7).
 
 ### `verify_citations` (인용 검증, v5.4)
 
@@ -417,7 +423,12 @@ nts-tax-mcp/
 | 파라미터 | 설명 |
 |---|---|
 | `case_serial` | `court_case_search` 결과의 `판례일련번호` |
-| `max_chars` | 판례내용 최대 길이 (기본 8000) |
+| `max_chars` | 판례내용 최대 길이 (기본 8000). 잘리면 응답에 `"잘림"` 안내와 `판례내용_전체자수` 포함 (v5.7) |
+| `start_char` | 판례내용 시작 오프셋 — 잘린 뒷부분을 이어 읽을 때 (v5.7) |
+
+법제처 판례 DB에는 국세청이 넘겨준 판례(`서울고등법원-2022-누-45199` 꼴, 법원명 빈칸)가
+섞여 있는데, 이들은 법제처 API가 본문을 주지 않습니다. `court_case_search` 결과에
+`본문조회` 안내가 붙으니 `nts_ruling_get_full_text`로 읽으세요.
 
 ### `law_interpretation_search` (법령해석례, `server_ext.py`)
 
@@ -484,6 +495,21 @@ nts-tax-mcp/
 공포일자·공포번호·시행일 요약("다만, 다음 각 호…" 단서의 호별 시행일 포함)을 반환합니다.
 조문별 시행일이 다른 개정이면 `조문별_상이한_시행일` 항목이 함께 옵니다.
 
+### `law_revision_reason` (제정·개정이유, v5.7, `server_ext.py`)
+
+| 파라미터 | 설명 |
+|---|---|
+| `law_name` | 법령명 (예: "국제조세조정에 관한 법률") |
+| `promul_no` | 공포번호, 쉼표로 여러 개 (예: `"제정,11126"`). `"제정"`은 제정 법령 |
+| `year` | 공포연도 YYYY, 쉼표로 여러 개 (예: `"2011,2019"`) — 그해 공포된 개정 전부 |
+| `law_id` | 법령ID (생략 시 법령명 정확 일치로 자동 결정 — 같은 이름의 시행령 혼입 방지) |
+| `include_amendment_text` | `true`면 개정문(어느 조문을 어떻게 고쳤는지)도 함께 |
+| `max_chars` | 개정 1건당 본문 최대 길이 (기본 6000) |
+
+`promul_no`·`year`를 모두 생략하면 개정 목록(공포일자·공포번호·제개정구분)만 최신순으로
+옵니다. 한 번에 최대 10건. **타법개정**(다른 법 개정에 딸린 개정)은 개정이유가 그 다른
+법의 것이므로 `주의`가 붙고 개정문이 자동으로 함께 옵니다.
+
 ### `admin_rule_search` (행정규칙, `server_ext.py`)
 
 | 파라미터 | 설명 |
@@ -514,7 +540,7 @@ nts-tax-mcp/
 
 ## 알려진 제한 사항
 
-- **법제처(law.go.kr) 도구 10개는 `server_ext.py`로 실행했을 때만 사용 가능**합니다.
+- **법제처(law.go.kr) 도구 11개는 `server_ext.py`로 실행했을 때만 사용 가능**합니다.
   `server.py`만 단독 실행하면 기본 8개만 노출됩니다.
 - **law.go.kr IP 화이트리스트**: 등록되지 않은 IP에서 호출하면 법제처 도구 전체가
   "인증 실패"(`status: AUTH_ERROR`)를 반환합니다. `open.law.go.kr` → OpenAPI

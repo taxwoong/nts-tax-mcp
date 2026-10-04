@@ -47,6 +47,29 @@ _INLINE_CTRL = {4, 5, 6, 7, 8, 9, 19, 20}
 _EXTENDED_CTRL = {1, 2, 3, 11, 12, 14, 15, 16, 17, 18, 21, 22, 23}
 _LINE_BREAK = {10, 13}  # 줄 나눔 / 문단 나눔
 
+# 한컴 전용 기호(사용자 정의 영역, PUA) → 표준 유니코드.
+# PUA는 글꼴마다 뜻이 달라 코드 범위로 추정하면 안 된다 — 근거가 있는 것만 싣는다.
+# 나머지 PUA는 PUA_UNKNOWN으로 바꾼다(모르는 기호를 그대로 두면 클라이언트가
+# 글자 누락·인코딩 오류로 읽는다). 2026-10-04 판결문 210건 표본에서 PUA가 나온 문서는
+# 손에 꼽을 정도다. 새 기호는 법제처 판례 본문(같은 판결의 유니코드판) 대조나
+# 문맥으로 뜻이 확정될 때만 추가한다 (참고: rhwp의 renderer/hancom_pua.rs 원칙과 같다).
+PUA_UNKNOWN = "�"
+_PUA_MAP = {
+    # 서울고등법원-2022-누-45199 — 법제처 판례 본문(일련번호 616567)의 같은 문장과 대조
+    0x10ECD4: "❶", 0x10ECD5: "❷", 0x10ECD6: "❸",
+    # 문맥 확정: '구 [E6F1]국제조세조정에 관한 법률[E6F2](이하 ‘국제조세법’…)' 등 법령명 낫표.
+    # 글꼴별로 두 벌이 쓰인다 — 서울행정법원-2014-구합-56994 (각 2·5쌍)
+    0x10E6F1: "「", 0x10E6F2: "」", 0x10E60B: "「", 0x10E60C: "」",
+    # 문맥 확정: '(이하 [F0852]특수관계자[F0853]라 한다)' — 서이46012-11356
+    0xF0852: "“", 0xF0853: "”",
+    # 문맥 확정: '부동산임대소득[F85E]사업소득[F85E]…' 나열 구분점 — 서면인터넷방문상담1팀-261
+    0xF85E: "·",
+}
+
+
+def _is_pua(cp: int) -> bool:
+    return 0xE000 <= cp <= 0xF8FF or cp >= 0xF0000
+
 
 class HwpExtractError(Exception):
     """HWP 파싱 실패 — 파일이 HWP 5.0이 아니거나 구조가 손상된 경우"""
@@ -239,7 +262,14 @@ def _para_text(data: bytes) -> str:
             pass  # 나머지 char control은 버린다
         else:
             out.append(chr(code))
-    return "".join(out)
+    # 코드 유닛을 한 글자씩 chr()로 옮기면 BMP 밖 글자(한컴 기호 U+F0000 이상)가
+    # 짝 잃은 서로게이트 2개로 남는다 — JSON·UTF-8 변환에서 '깨진 2글자'가 되던 원인.
+    # UTF-16으로 되돌려 다시 읽으면 짝이 맞는 쌍은 한 글자로 합쳐진다.
+    text = "".join(out).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+    if any(_is_pua(ord(ch)) for ch in text):
+        text = "".join(_PUA_MAP.get(ord(ch), PUA_UNKNOWN) if _is_pua(ord(ch)) else ch
+                       for ch in text)
+    return text
 
 
 def extract_text(path_or_bytes) -> str:
