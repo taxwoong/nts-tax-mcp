@@ -13,7 +13,8 @@ from typing import Optional
 import requests
 
 from server import mcp  # 기존 FastMCP 인스턴스 + 도구 그대로 재사용
-from law_go_kr import LawGoKrClient, LawGoKrError, LawGoKrAuthError, LawGoKrNotFound
+from law_go_kr import (LawGoKrClient, LawGoKrError, LawGoKrAuthError, LawGoKrNotFound,
+                       LawGoKrUpstreamError)
 
 logger = logging.getLogger("nts-tax-mcp.ext")
 _law = LawGoKrClient()
@@ -41,6 +42,10 @@ def _safe(fn, *args, **kwargs):
                 "_guidance": "조회는 정상 수행됐고 해당 자료가 원천에 없음 — 입력(법령명·번호·형식·기준일)을 확인"}
     except LawGoKrError as e:
         return {"status": "INVALID_INPUT", "오류": str(e)}
+    except LawGoKrUpstreamError as e:
+        # 통합본 조회 실패 뒤 대체 원문에도 조문이 없는 경우 등 — 원천 응답 이상이라 부존재로 단정할 수 없다
+        logger.warning("law.go.kr 응답 이상: %s", e)
+        return {"status": "UPSTREAM_ERROR", "오류": str(e), "_guidance": _UPSTREAM_GUIDE}
     except requests.exceptions.RequestException as e:
         logger.error("law.go.kr 접속 실패: %s", e)
         return {"status": "UPSTREAM_ERROR", "오류": f"{type(e).__name__}: {e}",
@@ -138,14 +143,22 @@ def law_article_as_of(law_name: str, as_of_date: str, article_no: str,
     """특정 날짜에 시행 중이던 법령 조문 원문 — '그 시점의 법'을 가져온다.
 
     예규 회신일·판결 선고일 당시의 조문을 확인할 때 사용한다. 연혁 시행본 중
-    as_of_date 이하 최대 시행일자 본을 자동 선택해 조문을 잘라 반환한다.
-    응답에 그 조문의 개별 시행일(조문시행일자)이 포함되며, 개정규정의 적용례
-    ("시행 이후 양도분부터 적용" 등)까지 필요하면 law_addenda_search를 쓴다.
+    시행일자가 as_of_date 이하인 마지막 시행본(적용시행본)을 고르고, 그 시행일 기준
+    통합본(법제처가 그 시행일 기준으로 만든 문안)에서 조문을 잘라 반환한다.
+    - 적용시행본.시행일자는 '그 시행본'의 시행일이지 이 조문의 개별 시행일이 아니다.
+      이 조문 문안이 언제부터 시행됐는지는 law_article_diff의 현행_문안_시작으로 확인.
+    - 시행예정_부분: 조문 일부(항·호)가 기준일 현재 아직 시행 전이면 그 시행일·대상
+      (사업장 규모 등 조건별 시행이면 '조건' 포함). 인용할 때 그 시행일을 함께 밝힌다.
+    - 공포본_참고: 과거 기준일 조회에서 법제처 과거 통합본이 뒤에 공포된 개정을 소급해
+      실은 흔적(기준일 뒤 날짜의 개정 주석)이 있거나, 통합본에는 없는데 기준일 당시 공포돼
+      있던 조문(시행 전)이면 기준일 이전 마지막 공포본의 같은 조문을 함께 준다 — '주의'를 따를 것.
+    - 원문의 〈개정 2024.12.31, 2025.12.23〉 같은 주석은 그 항의 개정 이력이다.
+    개정규정의 적용례("시행 이후 양도분부터 적용" 등)는 law_addenda_search(article_no)로 본다.
 
     Args:
-        law_name: 법령명 (예: "소득세법 시행령")
+        law_name: 법령명 (예: "소득세법 시행령") — 약칭 불가, 이름이 정확히 같은 법령이 없으면 INVALID_INPUT
         as_of_date: 기준일 YYYYMMDD (예: 예규 회신일 "20080715")
-        article_no: 조번호 — "162" 또는 가지조문 "104의3" 형식 (패딩 없음)
+        article_no: 조번호 — "162" 또는 가지조문 "104의3" 형식 ("제104조의3"도 됨, 항·호는 빼고)
         law_id: 법령ID 필터 — 생략하면 이름이 정확히 같은 법령으로 좁힌다(시행령·시행규칙 제외)
         max_chars: 원문 최대 길이 (기본 6000). 응답에 "잘림" 항목이 있으면
             거기 안내된 길이 이상으로 지정해 다시 호출하면 전문을 받는다.
@@ -165,9 +178,13 @@ def law_article_diff(law_name: str, article_no: str, date_from: str,
 
     변경이 있으면:
     - diff: unified diff 형식 (-줄 = A에만, +줄 = B에만. 〈개정 …〉 주석 포함)
-    - 현행_문안_시작: B 문안이 처음 시행된 시행본 (A~B 사이 시행본을 이진탐색으로 특정)
+    - 현행_문안_시작: B 문안이 처음 시행된 시행본 (A~B 사이 시행본을 이진탐색으로 특정).
+      그 시행일자가 곧 이 조문 현행 문안의 시행일이다. 특정근거가 '불확실'이면 법제처 과거
+      통합본이 뒤 개정을 소급해 실은 경우라 '뒤_개정_후보'(개정문_언급=True 우선)를 확인할 것
     - 개정_부칙: 그 개정 부칙의 시행일 요약 + 이 조문이 언급된 적용례·경과조치 발췌
       ("시행 후 양도분부터 적용" 등 — 언제 거래분부터 새 조문이 적용되는지)
+    표 괘선·전각 기호만 다르면 변경여부 False + 서식차이 True. 비교기준.A/B.시행예정_부분은
+    각 기준일 현재 아직 시행 전인 부분([시행일] 표시)이다.
 
     주의: A~B 사이 개정이 여러 번이면 마지막 변경만 특정된다. 응답의 안내에 따라
     date_to를 좁혀 재호출하면 그 이전 변경도 찾을 수 있다. find_change=True는
@@ -196,16 +213,21 @@ def law_addenda_search(law_name: str = "", mst: str = "", law_id: str = "",
     개정 세법의 시행일, 적용례("이 법 시행 이후 양도하는 분부터 적용"), 경과조치는
     본문 조문이 아니라 부칙에 있다. 이 도구가 그 부칙을 가져온다. 세 가지 사용법:
 
-    1) 목록: law_name(또는 mst)만 주면 부칙 목록을 최신순으로 반환
+    1) 목록: law_name만 주면 부칙 목록을 최신순으로 반환
        — 각 부칙의 공포일자·공포번호·시행일 요약. 조문별 시행일이 다르면 그 내역도 포함
     2) 특정 개정의 부칙 전문: promul_no(공포번호) 지정
        — law_history_search 결과의 공포번호를 넣으면 그 개정의 시행일·적용례·경과조치 전문
     3) 특정 조문의 적용시기: article_no 지정 (예: "96", "104의3")
        — 전체 부칙에서 그 조문이 언급된 적용례·경과조치 항만 최신순으로 발췌
 
+    부칙은 시행본의 시행일 기준 통합본에서 읽는다 — 그날까지 시행된 개정의 부칙만 들어 있다
+    (부칙범위 참고). 기준일 현재 공포됐지만 아직 시행 전인 개정은 '시행전_개정'(목록)·
+    '시행전_개정_부칙_언급'(article_no)으로 따로 나온다 — 시행일과 함께 안내할 것.
+
     Args:
-        law_name: 법령명 (예: "소득세법", "법인세법 시행령") — mst 미지정 시 필수
-        mst: 법령일련번호를 직접 지정 (law_history_search·law_article_as_of 결과의 MST)
+        law_name: 법령명 (예: "소득세법", "법인세법 시행령") — 권장. 현행·기준일 시행본을 자동 선택
+        mst: 법령일련번호 직접 지정 — 그 MST의 연혁 행 중 기준일(as_of_date, 없으면 오늘) 이하
+             마지막 시행본의 통합본을 쓴다. 보통은 law_name(+as_of_date)이 더 정확하다
         law_id: 법령ID 필터 (같은 이름의 본법/시행령 혼입 방지)
         as_of_date: YYYYMMDD — 이 날짜 당시 시행본의 부칙을 조회 (미지정 시 현행본)
         promul_no: 공포번호 (예: "21221") — 그 개정 부칙의 전문 반환

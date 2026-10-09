@@ -146,6 +146,13 @@ def check_law(m: dict):
         art = client.law_article(lm["mst_current"], "104", max_chars=1000)
         report("law 조문", "양도소득세의 세율" in art.get("조문제목", ""),
                f"조문제목={art.get('조문제목')!r}")
+        # 도구 경로(v5.7.2~)는 시행일 기준 통합본(target=eflaw)을 받는다 — '주의'가 붙으면
+        # 통합본 조회가 실패해 공포 당시 원문으로 폴백했다는 뜻이므로 API 변경 의심
+        art_ef = client.law_article(lm["mst_current"], "104", max_chars=1000,
+                                    ef_yd=lm["current_시행일자"])
+        report("law 조문(통합본)", "양도소득세의 세율" in art_ef.get("조문제목", "") and "주의" not in art_ef,
+               f"조문제목={art_ef.get('조문제목')!r}"
+               + (f" 주의={art_ef['주의'][:80]}" if "주의" in art_ef else ""))
 
         add = client.law_addenda(mst=lm["mst_current"], recent=3)
         report("law 부칙", add.get("부칙총수", 0) > 50, f"부칙 {add.get('부칙총수')}건")

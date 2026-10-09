@@ -127,9 +127,18 @@ def capture_law(manifest: dict):
     cur = diff["비교기준"]["B"]["시행본"]
     old = diff["비교기준"]["A"]["시행본"]
 
+    # 파서 테스트(test_law_article_slice·test_law_addenda 등)는 MST 공포 당시 원문(target=law)을 쓴다 —
+    # 도구 경로는 v5.7.2부터 시행일 기준 통합본(target=eflaw)을 받으므로 원문은 따로 캡처한다
+    for mst in {cur["MST"], old["MST"]}:
+        text = orig("lawService.do", target="law", MST=mst)
+        captured.append(("lawService.do", {"target": "law", "MST": mst}, text))
+
     eflaw_pages, seen = [], set()
     for endpoint, params, text in captured:
-        if params.get("target") == "eflaw":
+        if endpoint == "lawService.do" and params.get("target") == "eflaw":
+            # 시행일 기준 통합본 — (MST, 시행일자)마다 문안이 다르다
+            save_gz(f"lawsvc_eflaw_{params['MST']}_{params['efYd']}.xml.gz", text)
+        elif params.get("target") == "eflaw":
             page = params.get("page", 1)
             if page not in seen:
                 seen.add(page)

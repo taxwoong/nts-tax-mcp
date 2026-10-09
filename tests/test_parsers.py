@@ -105,8 +105,17 @@ def test_olta_parse_empty_returns_nothing():
 # law.go.kr — XML 파싱 (모듈의 _get을 픽스처 서버로 교체해 오프라인 실행)
 # ---------------------------------------------------------------------------
 
+_NO_MATCH_XML = ('<?xml version="1.0" encoding="utf-8"?><Law>일치하는 법령이 없습니다.  '
+                 '법령명을 확인하여 주십시오.</Law>')  # law.go.kr 실제 응답 (2026-10-09 실측)
+
+
 def _fixture_get(endpoint, **params):
     target = params.get("target")
+    if endpoint == "lawService.do" and target == "eflaw":
+        # 시행일 기준 통합본 (MST + 시행일자) — 픽스처가 없으면 law.go.kr처럼 '일치하는 법령 없음'을
+        # 돌려줘 도구가 공포 당시 원문으로 폴백하게 한다
+        path = FIXTURES / f"lawsvc_eflaw_{params.get('MST')}_{params.get('efYd')}.xml.gz"
+        return read_gz(path.name) if path.exists() else _NO_MATCH_XML
     if target == "eflaw":
         page = params.get("page", 1)
         path = FIXTURES / f"law_eflaw_p{page}.xml.gz"
@@ -161,6 +170,15 @@ def test_law_article_slice():
         art3 = client.law_article(m["mst_current"], "104의3", max_chars=200_000)
         assert art3["조문"] == "제104조의3"
         assert "비사업용" in art3["조문제목"]
+        # 시행본 행(MST + 시행일자) 기준 — 시행일 기준 통합본 픽스처에서도 같은 슬라이스가 돼야 한다
+        art_ef = client.law_article(m["mst_current"], "104", max_chars=200_000,
+                                    ef_yd=m["current_시행일자"])
+        assert art_ef["조문"] == "제104조" and "양도소득세의 세율" in art_ef["조문제목"], art_ef["조문제목"]
+        # 통합본의 <조문시행일자>는 늘 시행본 시행일자라 조문별 시행일로 오독되지 않게 내보내지 않는다 (v5.7.2)
+        assert "조문시행일자" not in art_ef, art_ef.get("조문시행일자")
+        assert "주의" not in art_ef, f"통합본 픽스처인데 폴백함: {art_ef.get('주의')}"
+        # 개정 주석은 태그 제거에 지워지지 않고 〈…〉로 남는다
+        assert re.search(r"〈(?:개정|신설|전문개정)[^〉]*\d{4}\.", art_ef["원문"]), art_ef["원문"][:300]
         # 없는 조문은 NotFound (v5.3 이후 계약)
         from law_go_kr import LawGoKrNotFound
         try:
@@ -191,7 +209,9 @@ def test_law_last_article_not_flooded_by_addenda():
 def test_law_addenda():
     m = manifest()["law"]
     with _fixture_law_client() as client:
-        out = client.law_addenda(mst=m["mst_current"], recent=5)
+        # 시행 전 개정의 공포본 원문 픽스처가 없어 그 발췌는 끈다 (test_law_eflaw.py에서 따로 검증)
+        client._pending_promulgations = lambda *a, **k: []
+        out = client.law_addenda(mst=m["mst_current"], as_of_date=m["date_to"], recent=5)
         assert out["부칙총수"] > 50, f"부칙 수 이상: {out['부칙총수']}"
         rows = out["부칙목록_최신순"]
         assert len(rows) == 5
@@ -199,7 +219,8 @@ def test_law_addenda():
             "공포번호 0 패딩이 제거되지 않음"
         assert rows[0]["공포일자"] >= rows[-1]["공포일자"], "부칙 목록이 최신순이 아님"
         # 특정 조문 발췌 모드: '제96조' 패턴이 '제96조의2'에 오매치되면 안 됨
-        art_out = client.law_addenda(mst=m["mst_current"], article_no="96", max_chars=6000)
+        art_out = client.law_addenda(mst=m["mst_current"], as_of_date=m["date_to"], article_no="96",
+                                     max_chars=6000)
         for entry in art_out.get("언급된_부칙_최신순", []):
             for para in entry["해당항"]:
                 cleaned = para.replace("제96조의", "")
@@ -220,6 +241,46 @@ def test_law_article_diff_offline():
     assert "\n+" in out["diff"] and "\n-" in out["diff"], "diff에 변경 줄이 없음"
     assert out["비교기준"]["A"]["시행본"]["MST"] == m["mst_old"]
     assert out["비교기준"]["B"]["시행본"]["MST"] == m["mst_current"]
+    # A·B 모두 시행일 기준 통합본 픽스처로 비교돼야 한다 (폴백하면 '주의'가 붙는다)
+    assert "주의" not in out, f"통합본이 아니라 공포 당시 원문으로 비교함: {out.get('주의')}"
+
+
+def test_law_addenda_consolidated_includes_later_promulgated_amendment():
+    """현행 시행본(소득세법 MST 280405, 시행 20260701)의 공포 당시 원문에는 그 MST보다 늦게
+    공포됐지만 먼저 시행된 2026.4.21 개정(법률 제21548호)의 부칙이 없다. 시행일 기준 통합본에는
+    있어야 한다 (2026-10-09 실측 픽스처: 원문 부칙 114건, 통합본 115건)."""
+    m = manifest()["law"]
+    import law_go_kr as L
+    with _fixture_law_client() as client:
+        legacy_units = L.LawGoKrClient._parse_addenda_units(L._get("lawService.do", target="law",
+                                                                   MST=m["mst_current"]))
+        cur = client.law_addenda(law_name=m["law_name"], law_id=m["law_id"],
+                                 as_of_date=m["date_to"], recent=200)
+        # mst만 줘도 그 MST의 연혁 행(기준일 이하 마지막 시행일자)의 통합본 — 예전에는 공포 당시 원문이었다
+        by_mst = client.law_addenda(mst=m["mst_current"], as_of_date=m["date_to"], recent=200)
+    legacy_nos = {u["공포번호"] for u in legacy_units}
+    cur_nos = {r["공포번호"] for r in cur["부칙목록_최신순"]}
+    assert "21548" not in legacy_nos, "픽스처 전제(원문에 2026.4.21 부칙 없음)가 깨짐"
+    assert "21548" in cur_nos, f"통합본 부칙 목록에 2026.4.21 개정 부칙이 없음: {sorted(cur_nos)[-5:]}"
+    assert cur["MST"] == m["mst_current"] and cur["시행본_시행일자"] == m["current_시행일자"], cur
+    assert "주의" not in cur and "통합본" in cur["부칙범위"], cur.get("주의") or cur.get("부칙범위")
+    assert {r["공포번호"] for r in by_mst["부칙목록_최신순"]} == cur_nos, "mst 경로가 통합본을 쓰지 않음"
+    assert by_mst["시행본_시행일자"] == m["current_시행일자"] and "통합본" in by_mst["부칙범위"], by_mst
+
+
+def test_law_article_as_of_uses_consolidated_text():
+    """현행 소득세법 제59조의2: 공포 당시 원문(MST 280405)은 '8세 이상', 2026.4.21 개정이 반영된
+    시행일 기준 통합본은 '13세 이상' (2026-10-09 실측 픽스처)."""
+    m = manifest()["law"]
+    with _fixture_law_client() as client:
+        legacy = client.law_article(m["mst_current"], "59의2", max_chars=20_000)
+        art = client.law_article_as_of(m["law_name"], m["date_to"], "59의2", law_id=m["law_id"],
+                                       max_chars=20_000)
+    assert "8세 이상" in legacy["원문"], "픽스처 전제(원문은 8세 이상)가 깨짐"
+    assert "13세 이상" in art["원문"] and "8세 이상" not in art["원문"], art["원문"][:300]
+    assert art["적용시행본"]["MST"] == m["mst_current"]
+    assert art["적용시행본"]["시행일자"] == m["current_시행일자"]
+    assert "주의" not in art, art.get("주의")
 
 
 def test_law_history_picks_latest_promulgation_on_same_date():
@@ -243,29 +304,41 @@ def test_law_history_picks_latest_promulgation_on_same_date():
 
 
 def test_pick_effective_version_backtracks_on_staged_enforcement():
-    """조문시행일자가 기준일보다 미래인 문안(단계 시행)은 이전 시행본으로 소급해야 한다."""
+    """(v5.7.2에서 계약 변경) 시행본 문안이 시행일 기준 통합본이 되면서 단계 시행 소급을 뺐다 —
+    통합본의 조문시행일자는 실측상 늘 그 시행본의 시행일자라 소급 조건이 생기지 않는다.
+    이제는 '시행일자가 기준일 이하인 마지막 행'을 고르고, 상태는 (MST, 시행일자) 행 단위로 본다.
+    같은 MST가 두 시행일자 행으로 나오면 행마다 문안이 다르다(단계 시행)."""
     from law_go_kr import LawGoKrClient
     history = [
         {"시행일자": "20250101", "MST": "OLD", "법령명": "x", "공포일자": "20241231",
          "공포번호": "1", "제개정구분": "일부개정"},
         {"시행일자": "20260101", "MST": "NEW", "법령명": "x", "공포일자": "20251223",
          "공포번호": "2", "제개정구분": "일부개정"},
+        {"시행일자": "20270101", "MST": "NEW", "법령명": "x", "공포일자": "20251223",
+         "공포번호": "2", "제개정구분": "일부개정"},  # 같은 공포본의 단계 시행 행
     ]
-    # NEW 시행본의 XML에는 조문시행일자 20270101(아직 발효 전)인 문안이 들어 있다
-    states = {"OLD": (["구 문안"], "20250101"), "NEW": (["신 문안"], "20270101")}
+    states = {("OLD", "20250101"): (["구 문안"], "20250101"),
+              ("NEW", "20260101"): (["1단계 문안"], "20260101"),
+              ("NEW", "20270101"): (["2단계 문안"], "20270101")}
+    seen = []
+
+    def state_fn(row):
+        seen.append((row["MST"], row["시행일자"]))
+        return states[(row["MST"], row["시행일자"])]
+
     client = LawGoKrClient()
-    row, lines, art = client._pick_effective_version(history, "20260301", "57의2",
-                                                     state_fn=lambda mst: states[mst])
-    assert row["MST"] == "OLD" and lines == ["구 문안"] and art == "20250101", \
-        f"미래 문안으로 소급 실패: {row['MST']} / {lines}"
-    # 조문시행일자가 기준일 이하이면 소급하지 않는다
-    row2, _, _ = client._pick_effective_version(history, "20270601", "57의2",
-                                                state_fn=lambda mst: states[mst])
-    assert row2["MST"] == "NEW", f"불필요한 소급 발생: {row2['MST']}"
-    # 조문이 아예 없는 시점(신설 전)은 소급하지 않고 그대로 반환
+    row, lines, art = client._pick_effective_version(history, "20260301", "57의2", state_fn=state_fn)
+    assert (row["MST"], row["시행일자"]) == ("NEW", "20260101") and lines == ["1단계 문안"], (row, lines)
+    assert seen == [("NEW", "20260101")], f"마지막 행 하나만 조회해야 함: {seen}"
+    # 같은 MST의 늦은 시행일자 행은 그 행의 문안 (MST만으로 구분하면 1단계 문안이 나온다)
+    row2, lines2, _ = client._pick_effective_version(history, "20270601", "57의2", state_fn=state_fn)
+    assert (row2["시행일자"], lines2) == ("20270101", ["2단계 문안"]), (row2, lines2)
+    # 조문이 아예 없는 시점(신설 전)은 그대로 반환
     row3, lines3, _ = client._pick_effective_version(
-        history, "20260301", "57의2", state_fn=lambda mst: (None, ""))
+        history, "20260301", "57의2", state_fn=lambda r: (None, "", ""))
     assert row3["MST"] == "NEW" and lines3 is None, "신설 전 케이스 처리 오류"
+    # 기준일 이전 시행본이 없으면 (None, None, "")
+    assert client._pick_effective_version(history, "20241231", "57의2", state_fn=state_fn) == (None, None, "")
 
 
 def test_law_date_format_validation():
@@ -426,6 +499,9 @@ def test_error_contract_safe():
     assert server_ext._safe(_r(LawGoKrNotFound("없음")))["status"] == "NOT_FOUND"
     assert server_ext._safe(_r(LawGoKrError("입력")))["status"] == "INVALID_INPUT"
     assert server_ext._safe(_r(requests.exceptions.Timeout("t")))["status"] == "UPSTREAM_ERROR"
+    # 통합본 조회 실패 뒤 대체 원문에도 조문이 없는 경우 — 부존재(NOT_FOUND)가 아니라 원천 이상 (v5.7.2)
+    from law_go_kr import LawGoKrUpstreamError
+    assert server_ext._safe(_r(LawGoKrUpstreamError("대체 원문에 없음")))["status"] == "UPSTREAM_ERROR"
     # 성공 경로: 리스트는 status+결과로 래핑, 빈 리스트는 NOT_FOUND
     assert server_ext._safe(lambda: [1])["status"] == "OK"
     assert server_ext._safe(lambda: [])["status"] == "NOT_FOUND"
