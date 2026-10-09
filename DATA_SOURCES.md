@@ -332,7 +332,7 @@ NTS/OLTA의 법원판례와 **별도 DB**라 문서번호 체계도 다르고 �
 | `court_case_detail` | prec | case_serial, max_chars |
 | `law_interpretation_search` | expc | keyword, display, serial |
 | `law_history_search` | law/eflaw | law_name, law_id, current_only |
-| `law_article_as_of` | eflaw(목록)→eflaw(통합본) | law_name, as_of_date, article_no, law_id |
+| `law_article_as_of` | eflaw(목록)→eflaw(통합본) | law_name, article_no, as_of_date(생략 시 오늘, v5.7.3), law_id |
 | `law_article_diff` | eflaw(목록)→eflaw(통합본) | law_name, article_no, date_from, date_to, law_id, max_chars, find_change (v5.4) |
 | `law_addenda_search` | eflaw(목록·통합본 부칙) / law(시행 전 개정의 공포본 부칙, 폴백) | law_name/mst, law_id, as_of_date, promul_no, article_no, recent, max_chars |
 | `admin_rule_search` | admrul | keyword, serial, display |

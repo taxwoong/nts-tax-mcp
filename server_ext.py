@@ -14,10 +14,13 @@ import requests
 
 from server import mcp  # 기존 FastMCP 인스턴스 + 도구 그대로 재사용
 from law_go_kr import (LawGoKrClient, LawGoKrError, LawGoKrAuthError, LawGoKrNotFound,
-                       LawGoKrUpstreamError)
+                       LawGoKrUpstreamError, _today_kst, install_oc_log_mask, mask_oc)
 
 logger = logging.getLogger("nts-tax-mcp.ext")
 _law = LawGoKrClient()
+# server.py가 import 시점에 logging.basicConfig를 했으므로 루트 핸들러가 있다 — 그 핸들러들에 기관코드(OC)
+# 가림 필터를 단다 (트레이스백까지 가린다. law_go_kr._get도 예외 문자열을 가려서 올린다)
+install_oc_log_mask()
 
 # status 계약 (server.py와 동일한 규칙):
 #   OK          정상 — 결과 있음
@@ -29,30 +32,36 @@ _UPSTREAM_GUIDE = (
     "law.go.kr 접속에 실패했습니다. 자료가 '없다'는 뜻이 아니므로 부존재로 단정하지 말고 "
     "잠시 후 재시도하세요."
 )
+# 법령 조문 도구(law_article_as_of·law_article_diff)의 NOT_FOUND 안내 — 조문 부재는 신설 전·조번호 오류일 수 있다.
+# 다른 도구(판례·해석례 등)의 NOT_FOUND 의미('자료 부존재로 판단 가능')는 그대로 둔다
+_ARTICLE_NOT_FOUND_GUIDE = (
+    "조문이 없다고 단정하지 말고 신설 전·조번호 오류 가능성을 확인 — law_history_search로 최근 개정"
+    "(시행일자·공포번호)을 확인하고, 시행 예정 조문이면 as_of_date를 시행일 이후로 지정해 다시 조회")
 
 
 def _safe(fn, *args, **kwargs):
+    # 오류 문자열은 모두 mask_oc를 거친다 — requests 예외 문자열에 요청 URL(OC=…)이 들어 있다
     try:
         out = fn(*args, **kwargs)
     except LawGoKrAuthError as e:
-        return {"status": "AUTH_ERROR", "오류": str(e),
+        return {"status": "AUTH_ERROR", "오류": mask_oc(e),
                 "_guidance": "인증 문제이므로 자료 부존재로 해석하지 말 것 — 서버 관리자 확인 필요"}
     except LawGoKrNotFound as e:
-        return {"status": "NOT_FOUND", "오류": str(e),
+        return {"status": "NOT_FOUND", "오류": mask_oc(e),
                 "_guidance": "조회는 정상 수행됐고 해당 자료가 원천에 없음 — 입력(법령명·번호·형식·기준일)을 확인"}
     except LawGoKrError as e:
-        return {"status": "INVALID_INPUT", "오류": str(e)}
+        return {"status": "INVALID_INPUT", "오류": mask_oc(e)}
     except LawGoKrUpstreamError as e:
         # 통합본 조회 실패 뒤 대체 원문에도 조문이 없는 경우 등 — 원천 응답 이상이라 부존재로 단정할 수 없다
-        logger.warning("law.go.kr 응답 이상: %s", e)
-        return {"status": "UPSTREAM_ERROR", "오류": str(e), "_guidance": _UPSTREAM_GUIDE}
+        logger.warning("law.go.kr 응답 이상: %s", mask_oc(e))
+        return {"status": "UPSTREAM_ERROR", "오류": mask_oc(e), "_guidance": _UPSTREAM_GUIDE}
     except requests.exceptions.RequestException as e:
-        logger.error("law.go.kr 접속 실패: %s", e)
-        return {"status": "UPSTREAM_ERROR", "오류": f"{type(e).__name__}: {e}",
+        logger.error("law.go.kr 접속 실패: %s", mask_oc(e))
+        return {"status": "UPSTREAM_ERROR", "오류": mask_oc(f"{type(e).__name__}: {e}"),
                 "_guidance": _UPSTREAM_GUIDE}
     except Exception as e:  # noqa: BLE001
         logger.exception("law.go.kr 호출 실패")
-        return {"status": "UPSTREAM_ERROR", "오류": f"{type(e).__name__}: {e}",
+        return {"status": "UPSTREAM_ERROR", "오류": mask_oc(f"{type(e).__name__}: {e}"),
                 "_guidance": _UPSTREAM_GUIDE}
     # 성공 경로 — 응답 형태를 status 계약에 맞춘다
     if isinstance(out, list):
@@ -65,6 +74,13 @@ def _safe(fn, *args, **kwargs):
             # 일부 조회 함수는 실패를 {"오류": …}로 반환한다 — NOT_FOUND로 분류
             out["status"] = "NOT_FOUND" if "오류" in out else "OK"
         return out
+    return out
+
+
+def _with_article_guide(out):
+    """법령 조문 도구의 NOT_FOUND에만 조문 전용 안내를 단다."""
+    if isinstance(out, dict) and out.get("status") == "NOT_FOUND":
+        out["_guidance"] = _ARTICLE_NOT_FOUND_GUIDE
     return out
 
 
@@ -138,13 +154,14 @@ def law_history_search(law_name: str, law_id: str = "", current_only: bool = Fal
 
 
 @mcp.tool()
-def law_article_as_of(law_name: str, as_of_date: str, article_no: str,
+def law_article_as_of(law_name: str, article_no: str, as_of_date: str = "",
                       law_id: str = "", max_chars: int = 6000) -> dict:
-    """특정 날짜에 시행 중이던 법령 조문 원문 — '그 시점의 법'을 가져온다.
+    """법령 조문 원문 — 현행(기준일 생략 시 오늘) 또는 과거·미래 특정 시점
 
-    예규 회신일·판결 선고일 당시의 조문을 확인할 때 사용한다. 연혁 시행본 중
-    시행일자가 as_of_date 이하인 마지막 시행본(적용시행본)을 고르고, 그 시행일 기준
-    통합본(법제처가 그 시행일 기준으로 만든 문안)에서 조문을 잘라 반환한다.
+    현행 조문 확인(as_of_date 생략 = 오늘, 한국 시간)과 예규 회신일·판결 선고일 당시의 조문
+    확인(as_of_date 지정)에 모두 쓴다. 미래 날짜를 주면 그날 시행될 문안(공포된 개정 반영)이다.
+    선택 규칙: 연혁 시행본 중 시행일자가 기준일 이하인 마지막 시행본(적용시행본)을 고르고, 그
+    시행일 기준 통합본(법제처가 그 시행일 기준으로 만든 문안)에서 조문을 잘라 반환한다.
     - 적용시행본.시행일자는 '그 시행본'의 시행일이지 이 조문의 개별 시행일이 아니다.
       이 조문 문안이 언제부터 시행됐는지는 law_article_diff의 현행_문안_시작으로 확인.
     - 시행예정_부분: 조문 일부(항·호)가 기준일 현재 아직 시행 전이면 그 시행일·대상
@@ -155,15 +172,18 @@ def law_article_as_of(law_name: str, as_of_date: str, article_no: str,
     - 원문의 〈개정 2024.12.31, 2025.12.23〉 같은 주석은 그 항의 개정 이력이다.
     개정규정의 적용례("시행 이후 양도분부터 적용" 등)는 law_addenda_search(article_no)로 본다.
 
+    NOT_FOUND는 조문이 없다고 단정하지 말고 신설 전·조번호 오류 가능성을 확인한다(_guidance 참고).
+
     Args:
         law_name: 법령명 (예: "소득세법 시행령") — 약칭 불가, 이름이 정확히 같은 법령이 없으면 INVALID_INPUT
-        as_of_date: 기준일 YYYYMMDD (예: 예규 회신일 "20080715")
         article_no: 조번호 — "162" 또는 가지조문 "104의3" 형식 ("제104조의3"도 됨, 항·호는 빼고)
+        as_of_date: 기준일 YYYYMMDD — 생략하면 오늘(현행). 예규 회신일 "20080715"처럼 과거 시점도 가능
         law_id: 법령ID 필터 — 생략하면 이름이 정확히 같은 법령으로 좁힌다(시행령·시행규칙 제외)
         max_chars: 원문 최대 길이 (기본 6000). 응답에 "잘림" 항목이 있으면
             거기 안내된 길이 이상으로 지정해 다시 호출하면 전문을 받는다.
     """
-    return _safe(_law.law_article_as_of, law_name, as_of_date, article_no, law_id, max_chars)
+    return _with_article_guide(_safe(_law.law_article_as_of, law_name, as_of_date or _today_kst(),
+                                     article_no, law_id, max_chars))
 
 
 @mcp.tool()
@@ -199,8 +219,8 @@ def law_article_diff(law_name: str, article_no: str, date_from: str,
         max_chars: diff 최대 길이 (기본 8000)
         find_change: False면 변경 시점 특정·부칙 연결을 생략 (빠른 비교만)
     """
-    return _safe(_law.law_article_diff, law_name, article_no, date_from,
-                 date_to, law_id, max_chars, find_change)
+    return _with_article_guide(_safe(_law.law_article_diff, law_name, article_no, date_from,
+                                     date_to, law_id, max_chars, find_change))
 
 
 @mcp.tool()
@@ -220,16 +240,18 @@ def law_addenda_search(law_name: str = "", mst: str = "", law_id: str = "",
     3) 특정 조문의 적용시기: article_no 지정 (예: "96", "104의3")
        — 전체 부칙에서 그 조문이 언급된 적용례·경과조치 항만 최신순으로 발췌
 
-    부칙은 시행본의 시행일 기준 통합본에서 읽는다 — 그날까지 시행된 개정의 부칙만 들어 있다
-    (부칙범위 참고). 기준일 현재 공포됐지만 아직 시행 전인 개정은 '시행전_개정'(목록)·
-    '시행전_개정_부칙_언급'(article_no)으로 따로 나온다 — 시행일과 함께 안내할 것.
+    기준일을 생략하면 오늘(현행) 시행본 기준이다. 부칙은 그 시행본의 시행일 기준 통합본에서
+    읽는다 — 그날까지 시행된 개정의 부칙만 들어 있다(부칙범위 참고). 기준일 현재 공포됐지만 아직
+    시행 전인 개정은 '시행전_개정'(목록)·'시행전_개정_부칙_언급'(article_no)으로 따로 나온다 —
+    시행일과 함께 안내할 것. law_name은 이름이 정확히 같은 현행 법령만 쓴다(약칭·일부 이름이면
+    INVALID_INPUT과 검색된 법령 후보).
 
     Args:
-        law_name: 법령명 (예: "소득세법", "법인세법 시행령") — 권장. 현행·기준일 시행본을 자동 선택
+        law_name: 법령명 (예: "소득세법", "법인세법 시행령", "상법") — 권장. 현행·기준일 시행본을 자동 선택
         mst: 법령일련번호 직접 지정 — 그 MST의 연혁 행 중 기준일(as_of_date, 없으면 오늘) 이하
              마지막 시행본의 통합본을 쓴다. 보통은 law_name(+as_of_date)이 더 정확하다
         law_id: 법령ID 필터 (같은 이름의 본법/시행령 혼입 방지)
-        as_of_date: YYYYMMDD — 이 날짜 당시 시행본의 부칙을 조회 (미지정 시 현행본)
+        as_of_date: YYYYMMDD — 이 날짜 당시 시행본의 부칙을 조회 (생략 시 오늘 시행본 = 현행)
         promul_no: 공포번호 (예: "21221") — 그 개정 부칙의 전문 반환
         article_no: 조번호 (예: "96", "57의2") — 그 조문이 언급된 부칙 항만 발췌
         recent: 목록 모드에서 반환할 부칙 수 (기본 10, 최신순)

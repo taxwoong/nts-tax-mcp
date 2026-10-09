@@ -9,7 +9,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![MCP](https://img.shields.io/badge/MCP-streamable--http-black)
 ![tools](https://img.shields.io/badge/tools-19-brightgreen)
-![status](https://img.shields.io/badge/version-v5.7.2-informational)
+![status](https://img.shields.io/badge/version-v5.7.3-informational)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
 ```bash
@@ -67,7 +67,7 @@ python server_ext.py          # http://0.0.0.0:8000/mcp (포트는 PORT 환경�
 | `court_case_detail` | 판례 본문 전문 조회 (판시사항·판결요지·참조조문·판례내용) |
 | `law_interpretation_search` | 법령해석례 검색/본문 조회 |
 | `law_history_search` | 법령 연혁(전체 시행본 목록: 시행일자·공포번호·MST) 조회 |
-| `law_article_as_of` | 특정 날짜 시행 중이던 법령 조문 원문 (예규·판례 인용 당시 조문 확인용) — 시행일 기준 통합본, 시행예정_부분·과거 기준일 공포본_참고 (v5.7.2) |
+| `law_article_as_of` | 법령 조문 원문 — 현행(기준일 생략 시 오늘, v5.7.3) 또는 과거·미래 특정 시점 (예규·판례 인용 당시 조문 확인용) — 시행일 기준 통합본, 시행예정_부분·과거 기준일 공포본_참고 (v5.7.2) |
 | `law_article_diff` | 조문 개정 diff(신구조문 대비) + 현행 문안 시작 시점 특정 + 개정 부칙 연결 (v5.4) |
 | `law_addenda_search` | 법령 부칙(시행일·적용례·경과조치) — 목록/특정 개정 전문/특정 조문 적용시기 발췌 |
 | `law_revision_reason` | 법령 제정·개정이유(◇개정이유·◇주요내용) 원문 — 공포번호·공포연도로 지정, 제정부터 수록 (v5.7) |
@@ -446,13 +446,13 @@ nts-tax-mcp/
 | `law_id` | 법령ID로 본법만 필터 (예: 부가가치세법=001571). 생략하면 이름이 정확히 같은 법령으로 좁힌다(시행령·시행규칙 제외) (v5.7.1) |
 | `current_only` | `true`면 현행 법령 검색만 (법령ID·MST 확인용) |
 
-### `law_article_as_of` (특정 시점 조문, `server_ext.py`)
+### `law_article_as_of` (현행·특정 시점 조문, `server_ext.py`)
 
 | 파라미터 | 설명 |
 |---|---|
 | `law_name` | 법령명 (예: "소득세법 시행령") — 약칭 불가. `law_id` 없이 이름이 정확히 같은 법령이 연혁에 없으면 `INVALID_INPUT`(검색된 법령 후보 포함) (v5.7.2) |
-| `as_of_date` | 기준일 YYYYMMDD (예: 예규 회신일) |
 | `article_no` | 조번호 — `"162"` 또는 가지조문 `"104의3"` 형식. `"제104조의3"`·`"104조"`·`"104의 3"`도 받고, 형식이 아니면 `INVALID_INPUT` (v5.7.2) |
+| `as_of_date` | 기준일 YYYYMMDD — **생략하면 오늘(한국 시간) = 현행** (v5.7.3). 예규 회신일 등 과거·미래 시점도 가능 |
 | `law_id` | 법령ID 필터 — 생략하면 이름이 정확히 같은 법령으로 좁힌다(시행령·시행규칙 제외, 같은 이름 ID가 여럿이면 그 ID들) (v5.7.1·v5.7.2) |
 | `max_chars` | 원문 최대 길이 (기본 6000). 조문이 이보다 길면 응답에 `"잘림"` 항목으로 전체 길이가 안내되며, 그 길이 이상으로 지정해 다시 호출하면 전문 반환 |
 
@@ -468,6 +468,8 @@ nts-tax-mcp/
   조문의 개정 주석에 기준일 뒤 날짜가 있거나, 통합본에 없거나 '삭제'인데 기준일 당시 공포본에는 있는
   조문이면 기준일 이전 마지막 공포본의 같은 조문을 함께 주고 `주의`로 알립니다. 통합본에 없고 공포본에만
   있는 조문은 `원문`이 비고 `통합본_문안_없음`이 붙습니다(종전에는 NOT_FOUND). 현행 조회는 대조하지 않습니다.
+- NOT_FOUND의 `_guidance`는 '조문이 없다고 단정하지 말고 신설 전·조번호 오류 가능성을 확인 — law_history_search로
+  최근 개정 확인'입니다(`law_article_diff`도 같음, v5.7.3). 다른 도구의 NOT_FOUND 의미는 그대로입니다.
 적용례·경과조치까지 필요하면 `law_addenda_search`를 사용하세요.
 
 ### `law_article_diff` (조문 개정 diff, v5.4, `server_ext.py`)
@@ -498,10 +500,10 @@ nts-tax-mcp/
 
 | 파라미터 | 설명 |
 |---|---|
-| `law_name` | 법령명 (예: "소득세법", "법인세법 시행령") — 권장(`mst` 미지정 시 필수). 동명 하위법령이 섞이면 정확 일치 우선 |
+| `law_name` | 법령명 (예: "소득세법", "법인세법 시행령", "상법") — 권장(`mst` 미지정 시 필수). 이름이 정확히 같은 현행 법령만 쓴다(현행 검색 100건에서 공백·가운뎃점 무시 비교) — 없으면 검색된 법령 후보와 함께 `INVALID_INPUT` (v5.7.3, 종전에는 첫 검색 결과로 내려가 '상법'에 다른 법 부칙이 나왔다) |
 | `mst` | 법령일련번호 직접 지정 — 그 MST의 연혁 행 중 기준일(`as_of_date`, 없으면 오늘) 이하 마지막 시행본의 통합본을 쓴다 (v5.7.2, 종전에는 MST 공포 당시 원문이라 늦게 공포·먼저 시행된 개정의 부칙이 빠졌다). 보통은 `law_name`(+`as_of_date`)이 더 정확 |
 | `law_id` | 법령ID 필터 — 생략하면 이름이 정확히 같은 법령으로 좁힌다(시행령·시행규칙 제외) (v5.7.1) |
-| `as_of_date` | YYYYMMDD — 이 날짜 당시 시행본의 부칙 조회 (미지정 시 현행본) |
+| `as_of_date` | YYYYMMDD — 이 날짜 당시 시행본의 부칙 조회 (생략 시 오늘 시행본 = 현행) |
 | `promul_no` | 공포번호 (예: "21221") — 그 개정 부칙의 **전문** 반환 |
 | `article_no` | 조번호 (예: `"96"`, `"104의3"`) — 그 조문이 언급된 부칙 항(적용례·경과조치)만 최신순 발췌. `"96"`이 `"96의2"`에 오매치되지 않도록 가지조문을 구분 |
 | `recent` | 목록 모드 반환 건수 (기본 10, 최신순) |

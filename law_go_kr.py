@@ -11,6 +11,7 @@ nts-tax-mcp 확장 모듈: 대법원 판례 · 법령(현행+연혁) · 법령�
   통합본 조회가 실패하면 target=law&MST=…(그 MST 공포 당시 원문)로 폴백하고 '주의'로 알린다.
 """
 import difflib
+import logging
 import os
 import re
 import html
@@ -32,6 +33,53 @@ _cache = {}        # key -> (만료시각, 응답텍스트)
 
 _TAG_RE = re.compile(r"<([^/>\s]+)>\s*(.*?)\s*</\1>", re.S)
 _NTS_CASE_NO_RE = re.compile(r"^[가-힣]+-\d{4}-[가-힣]+-\d+$")  # 국세청 판례 표기
+
+# 기관코드(OC) 가림 — law.go.kr 요청 URL에 OC가 쿼리로 붙어, requests 예외 문자열('500 Server Error … for url:
+# http://www.law.go.kr/DRF/lawService.do?OC=…&…')이 도구 응답 '오류' 필드와 로그로 그대로 나갔다
+# (2026-10-09 리뷰 재현: 가짜 OC로 Response(500).raise_for_status() → UPSTREAM_ERROR 오류 문자열에 OC 값)
+_OC_PARAM_RE = re.compile(r"(OC=)[^&\s'\"<>]+")
+
+
+def mask_oc(text) -> str:
+    """문자열(또는 예외)에서 기관코드를 가린다 — 'OC=<값>' → 'OC=***', 값 자체가 나와도 '***'."""
+    s = str(text)
+    if OC:
+        s = s.replace(OC, "***")
+    return _OC_PARAM_RE.sub(r"\1***", s)
+
+
+def _masked_request_error(e):
+    """requests 예외를 같은 종류의 새 예외로 바꿔 메시지의 OC를 가린다. 응답 객체는 그대로 둔다
+    (_version_xml이 HTTP 상태코드로 폴백 여부를 정한다). 원래 예외 체인은 버린다 — 트레이스백 로그에도
+    urllib3 예외의 요청 URL(OC 포함)이 찍히기 때문."""
+    msg = mask_oc(e)
+    try:
+        return type(e)(msg, response=getattr(e, "response", None))
+    except Exception:  # noqa: BLE001 — 생성자 인자가 다른 하위 예외
+        return requests.exceptions.RequestException(msg, response=getattr(e, "response", None))
+
+
+class OcMaskFilter(logging.Filter):
+    """로그 레코드의 메시지·트레이스백에서 기관코드를 가린다 (핸들러에 단다)."""
+
+    def filter(self, record):
+        try:
+            msg = record.getMessage()
+        except Exception:  # noqa: BLE001 — 형식 오류 레코드는 그대로 둔다
+            return True
+        record.msg, record.args = mask_oc(msg), ()
+        if record.exc_info:
+            record.exc_text = mask_oc(logging.Formatter().formatException(record.exc_info))
+            record.exc_info = None
+        return True
+
+
+def install_oc_log_mask(logger=None):
+    """로거(기본: 루트)의 핸들러마다 OcMaskFilter를 단다. 서버 기동 시 logging 설정 뒤에 부른다."""
+    lg = logger or logging.getLogger()
+    for h in lg.handlers:
+        if not any(isinstance(f, OcMaskFilter) for f in h.filters):
+            h.addFilter(OcMaskFilter())
 
 # 시행본 문안의 원천 — target=law(공포 당시 원문)에서 target=eflaw(시행일 기준 통합본)로 바꿨다.
 # target=law&MST=…는 그 MST가 '공포될 당시'의 원문이다. 연혁 목록에서 같은 MST가 더 늦은 시행일자
@@ -205,9 +253,12 @@ def _get(endpoint: str, **params) -> str:
     now = time.time()
     if hit and hit[0] > now:
         return hit[1]
-    r = requests.get(f"{BASE}/{endpoint}", params=p, timeout=TIMEOUT,
-                     headers={"User-Agent": "nts-tax-mcp/1.0"})
-    r.raise_for_status()
+    try:
+        r = requests.get(f"{BASE}/{endpoint}", params=p, timeout=TIMEOUT,
+                         headers={"User-Agent": "nts-tax-mcp/1.0"})
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise _masked_request_error(e) from None   # 예외 문자열의 요청 URL에 OC가 들어 있다
     text = r.text
     if "인증" in text[:500] and "실패" in text[:500]:
         raise LawGoKrAuthError("law.go.kr 인증 실패 — OC 또는 IP 등록 확인 필요 (open.law.go.kr에서 현재 서버 IP 등록)")
@@ -642,14 +693,25 @@ class LawGoKrClient:
                     raise LawGoKrNotFound(f"{as_of_date} 이전 시행본 없음: {law_name}")
                 mst, ef_yd = chosen["MST"], chosen["시행일자"]
             else:
-                rows = self.search_laws(law_name)
-                if law_id:
-                    rows = [r for r in rows if r.get("법령ID") == law_id]
-                exact = [r for r in rows if r.get("법령명") == law_name.strip()]
-                pick = exact or rows  # "소득세법" 검색에 시행령·시행규칙이 섞여 나와 정확 일치 우선
-                if not pick:
-                    raise LawGoKrNotFound(f"법령 검색 결과 없음: {law_name}")
-                chosen = pick[0]
+                # 이름이 정확히 같은 현행 법령만 쓴다 — 예전에는 정확 일치가 없으면 검색 첫 결과로 내려가
+                # law_name='상법'에 '1980년해직공무원의보상등에관한특별조치법' 부칙이 OK로 나갔다 (2026-10-09 실측:
+                # display=20 검색 결과가 모두 '…보상…' 법령, display=100이면 34번째에 '상법')
+                found = self.search_laws(law_name, display=100)
+                rows = ([r for r in found if r.get("법령ID") == law_id] if law_id else
+                        [r for r in found if _norm_name(r.get("법령명", "")) == _norm_name(law_name)])
+                if not rows:
+                    if not found:
+                        raise LawGoKrNotFound(f"법령 검색 결과 없음: {law_name}")
+                    names = []
+                    for r in found:
+                        if r.get("법령명") and r["법령명"] not in names:
+                            names.append(r["법령명"])
+                    raise LawGoKrError(
+                        (f"법령ID {law_id}인 현행 법령이 '{law_name}' 검색 결과에 없음" if law_id else
+                         f"'{law_name}'과(와) 이름이 정확히 같은 현행 법령이 검색 결과에 없음")
+                        + f" — 정확한 법령명(약칭 불가)으로 다시 조회하세요 (검색된 법령: "
+                        + ", ".join(names[:10]) + (" 등" if len(names) > 10 else "") + ")")
+                chosen = rows[0]
                 # 현행 검색 결과의 시행일자도 연혁 행의 시행일자다 (2026-10-09 실측: 소득세법 현행
                 # MST 280405 시행일자 20260701 = 연혁 '기준일 이하 마지막 행')
                 mst, ef_yd = chosen["MST"], chosen.get("시행일자", "")
