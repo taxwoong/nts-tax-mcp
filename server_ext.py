@@ -123,8 +123,8 @@ def law_history_search(law_name: str, law_id: str = "", current_only: bool = Fal
 
     Args:
         law_name: 법령명 (예: "부가가치세법")
-        law_id: 법령ID로 본법만 필터 (예: 부가가치세법=001571). 같은 이름의
-                시행령·시행규칙 혼입을 막으려면 지정 권장.
+        law_id: 법령ID로 본법만 필터 (예: 부가가치세법=001571). 생략하면 이름이 정확히 같은 법령으로 좁힌다(시행령·시행규칙 제외).
+                이름이 같은 법령이 둘 이상이면 지정.
         current_only: True면 현행 법령 검색만 (법령ID·MST 확인용)
     """
     if current_only:
@@ -146,7 +146,7 @@ def law_article_as_of(law_name: str, as_of_date: str, article_no: str,
         law_name: 법령명 (예: "소득세법 시행령")
         as_of_date: 기준일 YYYYMMDD (예: 예규 회신일 "20080715")
         article_no: 조번호 — "162" 또는 가지조문 "104의3" 형식 (패딩 없음)
-        law_id: 법령ID 필터 (권장 — 본법/시행령 혼입 방지)
+        law_id: 법령ID 필터 — 생략하면 이름이 정확히 같은 법령으로 좁힌다(시행령·시행규칙 제외)
         max_chars: 원문 최대 길이 (기본 6000). 응답에 "잘림" 항목이 있으면
             거기 안내된 길이 이상으로 지정해 다시 호출하면 전문을 받는다.
     """
@@ -178,7 +178,7 @@ def law_article_diff(law_name: str, article_no: str, date_from: str,
         article_no: 조번호 — "104" 또는 가지조문 "104의3" 형식
         date_from: 비교 기준 A (YYYYMMDD, 예: 예규 회신일)
         date_to: 비교 기준 B (YYYYMMDD, 생략 시 오늘 = 현행)
-        law_id: 법령ID 필터 (본법/시행령 혼입 방지, 권장)
+        law_id: 법령ID 필터 — 생략하면 이름이 정확히 같은 법령으로 좁힌다(시행령·시행규칙 제외)
         max_chars: diff 최대 길이 (기본 8000)
         find_change: False면 변경 시점 특정·부칙 연결을 생략 (빠른 비교만)
     """

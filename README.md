@@ -9,7 +9,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![MCP](https://img.shields.io/badge/MCP-streamable--http-black)
 ![tools](https://img.shields.io/badge/tools-19-brightgreen)
-![status](https://img.shields.io/badge/version-v5.7-informational)
+![status](https://img.shields.io/badge/version-v5.7.1-informational)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
 ```bash
@@ -443,7 +443,7 @@ nts-tax-mcp/
 | 파라미터 | 설명 |
 |---|---|
 | `law_name` | 법령명 (예: "부가가치세법") |
-| `law_id` | 법령ID로 본법만 필터 (같은 이름의 시행령·시행규칙 혼입 방지, 예: 부가가치세법=001571) |
+| `law_id` | 법령ID로 본법만 필터 (예: 부가가치세법=001571). 생략하면 이름이 정확히 같은 법령으로 좁힌다(시행령·시행규칙 제외) (v5.7.1) |
 | `current_only` | `true`면 현행 법령 검색만 (법령ID·MST 확인용) |
 
 ### `law_article_as_of` (특정 시점 조문, `server_ext.py`)
@@ -453,7 +453,7 @@ nts-tax-mcp/
 | `law_name` | 법령명 (예: "소득세법 시행령") |
 | `as_of_date` | 기준일 YYYYMMDD (예: 예규 회신일) |
 | `article_no` | 조번호 — `"162"` 또는 가지조문 `"104의3"` 형식 (패딩 없음) |
-| `law_id` | 법령ID 필터 (권장 — 본법/시행령 혼입 방지) |
+| `law_id` | 법령ID 필터 — 생략하면 이름이 정확히 같은 법령으로 좁힌다(시행령·시행규칙 제외) (v5.7.1) |
 | `max_chars` | 원문 최대 길이 (기본 6000). 조문이 이보다 길면 응답에 `"잘림"` 항목으로 전체 길이가 안내되며, 그 길이 이상으로 지정해 다시 호출하면 전문 반환 |
 
 응답에 `조문시행일자`(그 조문의 개별 시행일)와 `적용시행본`(선택된 시행본의
@@ -467,7 +467,7 @@ nts-tax-mcp/
 | `article_no` | 조번호 — `"104"` 또는 가지조문 `"104의3"` 형식 |
 | `date_from` | 비교 기준 A (YYYYMMDD, 예: 예규 회신일) |
 | `date_to` | 비교 기준 B (YYYYMMDD, 생략 시 오늘 = 현행) |
-| `law_id` | 법령ID 필터 (본법/시행령 혼입 방지, 권장) |
+| `law_id` | 법령ID 필터 — 생략하면 이름이 정확히 같은 법령으로 좁힌다(시행령·시행규칙 제외) (v5.7.1) |
 | `max_chars` | diff 최대 길이 (기본 8000). 잘리면 `"잘림"` 안내 포함 |
 | `find_change` | `false`면 변경 시점 특정·부칙 연결 생략 (빠른 비교만) |
 
@@ -484,7 +484,7 @@ nts-tax-mcp/
 |---|---|
 | `law_name` | 법령명 (예: "소득세법", "법인세법 시행령") — `mst` 미지정 시 필수. 동명 하위법령이 섞이면 정확 일치 우선 |
 | `mst` | 법령일련번호 직접 지정 (`law_history_search`·`law_article_as_of` 결과의 MST) |
-| `law_id` | 법령ID 필터 (본법/시행령 혼입 방지) |
+| `law_id` | 법령ID 필터 — 생략하면 이름이 정확히 같은 법령으로 좁힌다(시행령·시행규칙 제외) (v5.7.1) |
 | `as_of_date` | YYYYMMDD — 이 날짜 당시 시행본의 부칙 조회 (미지정 시 현행본) |
 | `promul_no` | 공포번호 (예: "21221") — 그 개정 부칙의 **전문** 반환 |
 | `article_no` | 조번호 (예: `"96"`, `"104의3"`) — 그 조문이 언급된 부칙 항(적용례·경과조치)만 최신순 발췌. `"96"`이 `"96의2"`에 오매치되지 않도록 가지조문을 구분 |
@@ -548,8 +548,9 @@ nts-tax-mcp/
 - **law.go.kr XML 파싱**: 응답을 정규식 기반 경량 파서로 처리합니다. API 응답
   구조가 바뀌면(태그명 변경 등) 파싱이 깨질 수 있습니다.
 - **`law_article_as_of`**: 연혁 시행본 중 기준일 이하 최대 시행일자 본을 자동
-  선택하는 방식이라, 같은 이름의 법령이 여러 개(본법/시행령/시행규칙) 섞여 있으면
-  `law_id`를 지정하지 않는 한 의도치 않은 시행본이 선택될 수 있습니다.
+  선택합니다. `law_id`를 생략하면 이름이 정확히 같은 법령의 시행본만 씁니다(v5.7.1 —
+  그전에는 시행령·시행규칙이 섞여 '노인장기요양보험법' 조문 조회에 시행령 조문이 나왔습니다).
+  이름이 같은 법령이 둘 이상이면 `law_id`를 지정하세요.
 
 - **NTS 세목 필터**: 정확한 세목명(양도소득세 등 14종, `DATA_SOURCES.md` 코드표 참고)을 주면
   서버측 필터가 적용되고, 그 외 문자열은 클라이언트단 후처리로 동작합니다.

@@ -85,6 +85,18 @@ def _parse_items(xml: str, item_tag: str):
     return items
 
 
+def _same_name_only(rows: list, law_name: str) -> list:
+    """법령ID 없이 이름으로 연혁을 찾으면 그 이름으로 시작하는 시행령·시행규칙 시행본까지 섞이고,
+    시행일이 더 늦은 하위법령 조문이 반환된다 (2026-10-09 실측: '노인장기요양보험법' 제9조·제10조가
+    시행령 조문으로 나옴). 이름이 정확히 같은 법령이 하나면 그 법령ID의 행만 남긴다 — 같은 ID면
+    옛 이름의 시행본도 남는다. 같은 이름이 없거나 여럿이면 그대로 둔다."""
+    key = re.sub(r"\s+", "", law_name or "")
+    ids = {r["법령ID"] for r in rows if re.sub(r"\s+", "", r.get("법령명", "")) == key}
+    if len(ids) != 1:
+        return rows
+    return [r for r in rows if r["법령ID"] in ids]
+
+
 class LawGoKrClient:
     # ---------- 판례 (법제처 제공 대법원·하급심) ----------
     def search_cases(self, keyword: str, court: str = "", date_from: str = "",
@@ -218,6 +230,8 @@ class LawGoKrClient:
                     "제개정구분": it.get("제개정구분명", ""),
                 })
             page += 1
+        if not law_id:
+            rows = _same_name_only(rows, law_name)
         # 같은 시행일자에 여러 공포본이 오는 일이 흔하다 — 조문별 단계 시행 때문에
         # 옛 공포본이 미래 시행일자 행으로 재등장하기 때문(2026-08-28 실측: 소득세법
         # 시행일자 20250101에 MST 6개). 시행일자만으로 정렬하면 '기준일 이하 마지막 행'을
