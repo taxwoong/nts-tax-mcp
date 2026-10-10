@@ -21,6 +21,7 @@ v2 개선사항:
 브라우저 없이 requests만으로 동작 (세션 쿠키 확보 후 재사용).
 """
 
+import html
 import json
 import logging
 import re
@@ -121,6 +122,77 @@ def _split_court_case(doc_no: str):
     if court == "대법":
         court = "대법원"
     return court, m.group(2) + m.group(3) + m.group(4)
+
+
+# ---- 질의회신·판례 밖의 컬렉션 필드 매핑 ----
+# 질의회신(question)·판례(precedent)는 TTL·NTST_DCM_DSCM_CNTN·GIST_CNTN 등을 쓰지만, 법령(statute)·별표서식(appendForm)·
+# 구 법령해석자료(formerLibrary)·홈택스 상담사례(hometaxCnslThan)는 필드 이름이 달라 그대로 두면 제목·본문 없이
+# doc_id와 색인 시각만 나갔다 (2026-10-10 실측: statute 결과 17건이 전부 title·summary 빈 값).
+_HL_RE = re.compile(r"<!H[SE]>")
+_HTML_TAG_RE = re.compile(
+    r"</?(?:p|br|div|span|table|thead|tbody|tr|td|th|ul|ol|li|strong|b|u|i|em|font)\b[^>]*>", re.I)
+_TAX_NAME_BY_CODE = {code: name for name, code in TAX_TYPE_CODES.items()}
+_SNIPPET_MAX = 1000
+_OTHER_COLLECTIONS = ("statute", "appendForm", "formerLibrary", "hometaxCnslThan")
+
+
+def _plain(text, limit: Optional[int] = None):
+    """검색 응답의 강조 표시(<!HS>…<!HE>)와 HTML 태그를 걷고 엔티티를 풀어 평문으로. 빈 값은 None.
+    통칙 본문은 HTML이 이스케이프된 채(&lt;p&gt;…) 오지만 법령 조문은 '<개정 2020.1.1.>' 같은 꺾쇠가 글자 그대로
+    있으므로, 이스케이프돼 있을 때만 알려진 HTML 태그를 지운다."""
+    if not text:
+        return None
+    t = _HL_RE.sub("", text)
+    if "&lt;" in t or "&amp;" in t or "&#" in t:
+        t = html.unescape(t)
+        t = re.sub(r"</p>|<br\s*/?>", "\n", t, flags=re.I)
+        t = _HTML_TAG_RE.sub("", t)
+    t = re.sub(r"[ \t ]+", " ", t)
+    t = re.sub(r"\s*\n\s*", "\n", t).strip()
+    if limit and len(t) > limit:
+        t = t[:limit].rstrip() + " …(이하 생략)"
+    return t or None
+
+
+def _fill_non_ruling_fields(item: dict, it: dict, coll: Optional[str]) -> None:
+    """법령·별표서식·구 법령해석자료·홈택스 상담사례 항목의 빈 필드를 컬렉션별 원본 필드로 채운다.
+    질의회신·판례 항목은 건드리지 않는다. coll을 모르면 필드로 컬렉션을 추정한다."""
+    kind = coll if coll in _OTHER_COLLECTIONS else None
+    if kind is None and coll is None:
+        kind = ("statute" if it.get("TEXT_KRN_NM") else "appendForm" if it.get("FRML_NM")
+                else "hometaxCnslThan" if it.get("STD_TITLE")
+                else "formerLibrary" if it.get("NTST_PLCN_BK_TTL") else None)
+    if kind is None:
+        return
+    name = _plain(it.get("NM"))
+    extra = {}
+    if kind == "statute":
+        item["title"] = _plain(" ".join(x for x in (it.get("NM"), it.get("TEXT_KRN_NM")) if x), 300) or item["title"]
+        item["doc_type"] = it.get("LBL1_NM") or it.get("STTT_CL_NM") or item["doc_type"]
+        item["date"] = it.get("PMG_DT") or item["date"]
+        item["tax_type"] = _TAX_NAME_BY_CODE.get(it.get("TLAW_CL_CD_CMN")) or item["tax_type"]
+        item["summary"] = _plain(it.get("TEXT_KRN_CNTN"), _SNIPPET_MAX) or item["summary"]
+        extra = {"law_name": name, "promulgation_no": it.get("PMG_NO"), "enforce_date": it.get("ENFR_DT")}
+    elif kind == "appendForm":
+        item["title"] = _plain(it.get("FRML_NM"), 300) or item["title"]
+        item["doc_type"] = it.get("STTT_CL_NM") or it.get("LBL1_NM") or item["doc_type"]
+        item["date"] = it.get("PMG_DT") or item["date"]
+        item["tax_type"] = _TAX_NAME_BY_CODE.get(it.get("TLAW_CL_CD_CMN")) or item["tax_type"]
+        item["summary"] = _plain(it.get("FILE_CN"), _SNIPPET_MAX) or item["summary"]
+        extra = {"law_name": name, "promulgation_no": it.get("PMG_NO"), "enforce_date": it.get("ENFR_DT")}
+    elif kind == "formerLibrary":
+        item["title"] = name or _plain(it.get("NTST_PLCN_BK_TTL")) or item["title"]
+        item["doc_type"] = it.get("LBL1_NM") or item["doc_type"]
+        item["source_org"] = it.get("NTST_JRSD_DNO_NM") or item["source_org"]
+        item["date"] = it.get("PLCN_DT") or item["date"]
+        item["summary"] = _plain(it.get("FILE_CN"), _SNIPPET_MAX) or item["summary"]
+    elif kind == "hometaxCnslThan":
+        item["title"] = _plain(it.get("STD_TITLE"), 300) or item["title"]
+        item["doc_type"] = it.get("LBL1_NM") or item["doc_type"]
+        item["date"] = it.get("REGST_DT") or item["date"]
+        item["tax_type"] = (it.get("REQ_TP_NM") or "").split("-")[0] or item["tax_type"]
+        item["summary"] = _plain(it.get("ANSWER_STD_CONTENT"), _SNIPPET_MAX) or item["summary"]
+    item.update({k: v for k, v in extra.items() if v})
 
 
 class NtsParseError(Exception):
@@ -593,14 +665,14 @@ class NtsTaxLawClient:
                 "name_kr": coll.get("nameKr"),
                 "total_count": coll.get("totalCount", 0),
                 "items": [
-                    self._clean_item(it, include_full_text=include_full_text)
+                    self._clean_item(it, include_full_text=include_full_text, coll=name_en)
                     for it in coll.get("resultList", [])
                 ],
             }
         return result
 
     @staticmethod
-    def _clean_item(it: dict, include_full_text: bool = True) -> dict:
+    def _clean_item(it: dict, include_full_text: bool = True, coll: Optional[str] = None) -> dict:
         def strip_hl(text):
             if not text:
                 return text
@@ -621,6 +693,7 @@ class NtsTaxLawClient:
             # get_full_text()/nts_ruling_get_full_text 도구가 이 값을 쓴다.
             "file_id": it.get("NTST_FLE_ID") or None,
         }
+        _fill_non_ruling_fields(item, it, coll)
         if include_full_text:
             # 주의: 이름과 달리 '전문'이 아니다 —
             #   CNTN    = 심판·심사는 전건 '결정내용은 붙임과 같습니다.' 상수

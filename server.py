@@ -206,7 +206,8 @@ def nts_ruling_search(
     Args:
         keyword: 검색어 (예: "조정대상지역", "부당행위계산 부인")
         collections: 검색할 범위. 생략시 전체 검색.
-            선택 가능 값: "form"(별표서식), "statute"(법령),
+            선택 가능 값: "form"(별표서식), "statute"(법령·기본통칙 — 검색어가 든 조각이지 조문 전체가 아니니
+            정확한 문안은 law_article_as_of로 확인),
             "ruling"(사전답변·서면질의·질의회신), "precedent"(심판·심사·판례),
             "old_ruling"(구 법령해석자료), "intl"(국제조세 해설), "hometax"(홈택스 상담사례)
         page: 페이지 번호 (1부터 시작). "더 보여줘" 같은 후속 요청시 2, 3...으로 증가

@@ -421,36 +421,76 @@ class LawGoKrClient:
         } for it in items]
 
     # ---------- 법령: 연혁(시행본) 목록 ----------
+    @staticmethod
+    def _eflaw_row(it: dict) -> dict:
+        return {
+            "법령명": it.get("법령명한글", ""),
+            "법령ID": it.get("법령ID", ""),
+            "MST": it.get("법령일련번호", ""),
+            "시행일자": it.get("시행일자", ""),
+            "공포일자": it.get("공포일자", ""),
+            "공포번호": it.get("공포번호", ""),
+            "제개정구분": it.get("제개정구분명", ""),
+        }
+
+    def _eflaw_rows(self, max_rows: int, **query) -> list:
+        """target=eflaw 검색을 100건씩 쪽 넘겨 모은다. query는 query=<법령명> 또는 LID=<법령ID>.
+        한 쪽이 100건 미만이면 마지막 쪽이다 — 빈 쪽을 한 번 더 요청하지 않는다."""
+        rows, page = [], 1
+        while len(rows) < max_rows and page <= 10:
+            # 페이지 크기 파라미터는 display가 맞음 — numOfRows는 무시되어 20건씩 5왕복하게 됨 (2026-08-18 실측)
+            xml = _get("lawSearch.do", target="eflaw", display=100, page=page, **query)
+            items = _parse_items(xml, "law")
+            if not items:
+                break
+            rows.extend(self._eflaw_row(it) for it in items)
+            if len(items) < 100:
+                break
+            page += 1
+        return rows
+
+    def _add_renamed_rows(self, rows: list, max_rows: int) -> list:
+        """이름으로 찾은 연혁에 개명 전 시행본을 보탠다. 법제처는 법령ID가 같아도 이름 검색에는 그 이름 시절의
+        행만 준다 — 상속세법(1950~1995)과 상속세및증여세법(1997~)은 같은 법령ID 001561이지만 이름 검색은
+        75행(1997~)만 주고 1950~1995 시행본 20여 행이 빠졌다(2026-10-10 실측). 그래서 law_article_as_of가
+        1996년 이전 기준일에 '이전 시행본 없음'을 냈다.
+        제정 행이 없는 ID(= 앞쪽이 잘렸다)만 LID로 다시 받아 합친다 — 제정 행이 있으면 개명 없는 완결된 연혁이라
+        왕복이 늘지 않는다."""
+        by_id = {}
+        for r in rows:
+            by_id.setdefault(r.get("법령ID", ""), []).append(r)
+        have = {(r["MST"], r["시행일자"]) for r in rows}
+        out = list(rows)
+        for lid, rs in by_id.items():
+            if not lid or any((r.get("제개정구분") or "") == "제정" for r in rs):
+                continue
+            for r in self._eflaw_rows(max_rows, LID=lid):
+                if r.get("법령ID") == lid and (r["MST"], r["시행일자"]) not in have:
+                    have.add((r["MST"], r["시행일자"]))
+                    out.append(r)
+        return out
+
     def law_history(self, law_name: str, law_id: str = "", max_rows: int = 500):
         """target=eflaw 연혁 시행본 전체 목록. law_id를 주면 그 본법만 필터
         (예: 부가가치세법=001571 — 같은 이름 하위법령 혼입 방지).
+        개명된 법령은 개명 전 시행본까지 포함한다(법령ID가 같으면 같은 법).
 
         max_rows 기본 500: 소득세법처럼 시행본이 많은 법령은 100행에서 끊으면
         2011년 이전 연혁이 통째로 누락되어 law_article_as_of·law_article_diff가
         과거 시점을 조회하지 못한다 (2026-08-28 실측)."""
         rows = []
-        page = 1
-        while len(rows) < max_rows and page <= 10:
-            # 페이지 크기 파라미터는 display가 맞음 — numOfRows는 무시되어 20건씩 5왕복하게 됨 (2026-08-18 실측)
-            xml = _get("lawSearch.do", target="eflaw", query=law_name, display=100, page=page)
-            items = _parse_items(xml, "law")
-            if not items:
-                break
-            for it in items:
-                if law_id and it.get("법령ID", "") != law_id:
-                    continue
-                rows.append({
-                    "법령명": it.get("법령명한글", ""),
-                    "법령ID": it.get("법령ID", ""),
-                    "MST": it.get("법령일련번호", ""),
-                    "시행일자": it.get("시행일자", ""),
-                    "공포일자": it.get("공포일자", ""),
-                    "공포번호": it.get("공포번호", ""),
-                    "제개정구분": it.get("제개정구분명", ""),
-                })
-            page += 1
-        if not law_id:
-            rows = _same_name_only(rows, law_name)
+        if law_id:
+            # 법령ID를 알면 이름 검색을 거치지 않고 ID로 바로 받는다 — 이름 검색은 그 이름 시절의 행만 줘서
+            # 개명 전 시행본이 빠진다
+            rows = [r for r in self._eflaw_rows(max_rows, LID=law_id) if r.get("법령ID") == law_id]
+        if not rows:   # 법령ID가 없거나, ID 검색이 비면(형식 차이 등) 이름 검색으로 되돌아간다
+            rows = self._eflaw_rows(max_rows, query=law_name)
+            if law_id:
+                rows = [r for r in rows if r.get("법령ID") == law_id]
+            else:
+                rows = _same_name_only(rows, law_name)
+            if rows:
+                rows = self._add_renamed_rows(rows, max_rows)
         # 같은 시행일자에 여러 공포본이 오는 일이 흔하다 — 조문별 단계 시행 때문에
         # 옛 공포본이 미래 시행일자 행으로 재등장하기 때문(2026-08-28 실측: 소득세법
         # 시행일자 20250101에 MST 6개). 시행일자만으로 정렬하면 '기준일 이하 마지막 행'을
@@ -525,10 +565,22 @@ class LawGoKrClient:
                      f"빠졌거나 아직 시행 전인 문안이 들어 있을 수 있으니 국가법령정보센터(law.go.kr)에서 "
                      f"시행일 기준 문안을 확인할 것")
 
-    @staticmethod
-    def _block_text(block: str) -> str:
-        """조문 블록 → 사람이 읽는 원문 (개정 주석 〈…〉 보존)."""
-        return _strip_tags(_keep_notes(_strip_cdata(block)))
+    # 조문 블록 앞머리의 메타데이터 태그 — 태그만 지우면 값이 본문 앞에 줄로 남는다
+    # ('1 / 조문 / 자녀세액공제 / 20260701 / 일부개정 / 000000 / N / 제59조의2(자녀세액공제) …', 2026-10-10 실측).
+    # 조문 번호·제목은 본문 첫 줄('제59조의2(자녀세액공제)')과 응답의 조문·조문제목 필드에 이미 있다.
+    _ARTICLE_META_RE = re.compile(
+        r"<(조문번호|조문가지번호|조문여부|조문제목|조문시행일자|조문제개정유형|조문이동이전|조문이동이후|조문변경여부|조문키)>"
+        r".*?</\1>\s*|<(?:조문번호|조문가지번호|조문여부|조문제목|조문시행일자|조문제개정유형|조문이동이전|조문이동이후|조문변경여부|조문키)\s*/>\s*",
+        re.S)
+
+    # 항·호·목 번호 태그가 곧바로 이어지는 내용 태그의 첫머리와 같을 때('①' 다음 '①종합소득이…')만 번호를 뺀다
+    _NUMBER_DUP_RE = re.compile(r"<(항|호|목)번호>(.+?)</\1번호>\s*(?=<\1내용>\s*\2)", re.S)
+
+    @classmethod
+    def _block_text(cls, block: str) -> str:
+        """조문 블록 → 사람이 읽는 원문 (개정 주석 〈…〉 보존, 메타데이터 줄·중복 번호 줄 제외)."""
+        t = cls._ARTICLE_META_RE.sub("", _strip_cdata(block))
+        return _strip_tags(_keep_notes(cls._NUMBER_DUP_RE.sub("", t))).strip()
 
     @classmethod
     def _staged_parts(cls, block: str, base_date: str):
@@ -1153,37 +1205,126 @@ class LawGoKrClient:
         }
 
     # ---------- 자치법규 (조례·규칙) ----------
+    # 지자체 필터(region)는 서버가 기관코드로만 받아 이름으로는 못 거른다 — 100건씩 훑으며 거른다.
+    # 검색어에 지자체명을 붙이는 방법은 도·시군구 조례를 놓친다('강원 시세 감면'은 강릉시 조례를 못 찾음)
+    _ORDIN_SCAN_PAGES = 5
+
+    @staticmethod
+    def _ordin_row(it: dict) -> dict:
+        return {
+            "일련번호": it.get("자치법규일련번호", it.get("법령일련번호", "")),
+            "자치법규ID": it.get("자치법규ID", ""),
+            "자치법규명": it.get("자치법규명", it.get("법령명한글", "")),
+            "지자체": it.get("지자체기관명", it.get("소관부처명", "")),
+            "공포일자": it.get("공포일자", ""),
+            "시행일자": it.get("시행일자", ""),
+            "제개정구분": it.get("제개정구분명", ""),
+        }
+
     def search_ordinances(self, keyword: str, region: str = "", display: int = 20, page: int = 1):
-        """target=ordin 자치법규 검색. region으로 지자체명 필터 (예: '서울', '용산구')."""
-        xml = _get("lawSearch.do", target="ordin", query=keyword, display=display, page=page)
-        items = _parse_items(xml, "law") + _parse_items(xml, "ordin")
-        rows = []
-        for it in items:
-            org = it.get("지자체기관명", it.get("소관부처명", ""))
-            if region and region not in org:
-                continue
-            rows.append({
-                "일련번호": it.get("자치법규일련번호", it.get("법령일련번호", "")),
-                "자치법규명": it.get("자치법규명", it.get("법령명한글", "")),
-                "지자체": org,
-                "공포일자": it.get("공포일자", ""),
-                "시행일자": it.get("시행일자", ""),
-                "제개정구분": it.get("제개정구분명", ""),
-            })
+        """target=ordin 자치법규 검색. region으로 지자체명 필터 (예: '서울', '용산구').
+        결과의 '일련번호'를 get_ordinance(serial)에 넘기면 본문이 나온다."""
+        display = max(1, min(int(display or 20), 100))
+        page = max(1, int(page or 1))
+        if not region:
+            xml = _get("lawSearch.do", target="ordin", query=keyword, display=display, page=page)
+            return [self._ordin_row(it) for it in _parse_items(xml, "law") + _parse_items(xml, "ordin")]
+        # region이 있으면 첫 쪽만 거르면 안 된다 — 키워드 결과가 84건인데 서울 조례가 뒤쪽이면 0건으로 보인다
+        # (2026-10-10 실측: '시세 감면'+region '서울'이 display=5에서 NOT_FOUND)
+        skip, need = (page - 1) * display, display
+        rows, scanned, total = [], 0, None
+        for p in range(1, self._ORDIN_SCAN_PAGES + 1):
+            xml = _get("lawSearch.do", target="ordin", query=keyword, display=100, page=p)
+            if total is None:
+                m = re.search(r"<totalCnt>(\d+)</totalCnt>", xml)
+                total = int(m.group(1)) if m else None
+            items = _parse_items(xml, "law") + _parse_items(xml, "ordin")
+            if not items:
+                break
+            scanned += len(items)
+            for it in items:
+                row = self._ordin_row(it)
+                if region not in row["지자체"]:
+                    continue
+                if skip > 0:
+                    skip -= 1
+                    continue
+                rows.append(row)
+            if len(rows) >= need or len(items) < 100 or (total is not None and scanned >= total):
+                break
+        rows = rows[:need]
+        if total is not None and scanned < total and len(rows) < need:
+            # 훑지 못한 뒤쪽이 남았다 — 0건이어도 '없다'고 단정하면 안 된다
+            return {"status": "OK" if rows else "NOT_FOUND", "결과": rows,
+                    "_guidance": (f"검색어 결과 {total}건 중 앞쪽 {scanned}건만 훑어 지자체 '{region}'를 거름 — "
+                                  f"나머지에 더 있을 수 있으니 검색어를 구체화하세요(예: 지자체명·조례명 포함)")}
         return rows
 
-    def get_ordinance(self, serial: str, max_chars: int = 10000):
-        """target=ordin 자치법규 본문."""
-        xml = _get("lawService.do", target="ordin", ID=serial)
-        name = re.search(r"<자치법규명>(.*?)</자치법규명>", xml, re.S)
-        body = _strip_tags(_strip_cdata(xml))
-        if len(body) < 50:
-            return {"오류": "본문 없음", "응답": xml[:200]}
-        return {
-            "자치법규명": _strip_cdata(name.group(1)) if name else "",
-            "본문": body[:max_chars],
-            "본문길이": len(body),
+    def get_ordinance(self, serial: str, max_chars: int = 10000, start_char: int = 0):
+        """target=ordin 자치법규 본문. serial = 검색 결과의 '일련번호'(자치법규일련번호 = MST).
+        예전에는 이 번호를 ID=로 넘겨 '일치하는 자치법규가 없습니다'가 나오거나, 숫자가 우연히 같은 ID의
+        전혀 다른 조례가 나왔다(2026-10-10 실측: 거제시 시세 감면 조례 일련번호로 하남시 제설 조례가 열림).
+        일련번호로 없을 때만 자치법규ID로 한 번 더 찾는다."""
+        serial = str(serial or "").strip()
+        if not re.fullmatch(r"\d{1,12}", serial):
+            raise LawGoKrError(f"serial 형식 오류: '{serial}' (ordinance_search 결과의 '일련번호' 숫자)")
+        via = "일련번호"
+        xml = _get("lawService.do", target="ordin", MST=serial)
+        if "<자치법규명>" not in xml:
+            xml = _get("lawService.do", target="ordin", ID=serial)
+            via = "자치법규ID"
+            if "<자치법규명>" not in xml:
+                raise LawGoKrNotFound(f"자치법규 없음 (번호 {serial}) — ordinance_search 결과의 '일련번호'를 쓰세요")
+
+        def tag(name, src=xml):
+            m = re.search(rf"<{name}>(.*?)</{name}>", src, re.S)
+            return _strip_cdata(m.group(1)).strip() if m else ""
+
+        arts = []
+        for j in _parse_items(xml, "조"):
+            text = (j.get("조내용") or "").strip()
+            if text:
+                arts.append(text)
+            elif j.get("조제목"):   # 내용 없는 장·절 제목
+                arts.append(j["조제목"])
+        parts = ["\n".join(arts)]
+        addenda = [b for b in _parse_items(xml, "부칙") if (b.get("부칙내용") or "").strip()]
+        for b in addenda:
+            content = b["부칙내용"].strip()
+            if re.match(r"부\s*칙", content):   # 본문이 이미 '부 칙 <조례 제N호, 날짜>'로 시작한다
+                parts.append(content)
+                continue
+            head = " ".join(x for x in (b.get("부칙공포일자", ""),
+                                        f"제{b['부칙공포번호']}호" if b.get("부칙공포번호") else "") if x)
+            parts.append("[부칙" + (f" {head}" if head else "") + "]\n" + content)
+        body = "\n\n".join(p for p in parts if p).strip()
+        if len(body) < 20:
+            raise LawGoKrNotFound(f"자치법규 본문 없음 (번호 {serial}) — 응답 앞부분: {xml[:200]}")
+        total = len(body)
+        start_char = max(0, int(start_char or 0))
+        end = min(start_char + max_chars, total)
+        out = {
+            "자치법규명": tag("자치법규명"),
+            "지자체": tag("지자체기관명"),
+            "일련번호": tag("자치법규일련번호"),
+            "자치법규ID": tag("자치법규ID"),
+            "공포일자": tag("공포일자"),
+            "공포번호": tag("공포번호"),
+            "시행일자": tag("시행일자"),
+            "제개정": tag("제개정정보"),
+            "담당부서": tag("담당부서명"),
+            "조회방식": via,
+            "본문": body[start_char:end],
+            "본문길이": total,
         }
+        if via == "자치법규ID":
+            out["주의"] = "일련번호로는 찾지 못해 자치법규ID로 조회 — 이 ID의 가장 최근 시행본일 수 있음(시행일자 확인)"
+        if end < total:
+            out["잘림"] = (f"전체 {total}자 중 {start_char}~{end}자만 표시됨 — "
+                         f"이어 읽으려면 start_char={end}로 다시 조회 (또는 max_chars를 {total} 이상으로 지정)")
+        elif start_char:
+            out["잘림"] = f"전체 {total}자 중 {start_char}~{total}자 표시 — 끝까지 읽음"
+        return out
 
     # ---------- 편의: 특정 날짜 시행본의 조문 (예규 당시 조문 확인용) ----------
     _STAGED_PAST_CAUTION = (
@@ -1212,9 +1353,9 @@ class LawGoKrClient:
             first = history[0]
             kind = first.get("제개정구분") or ""
             hint = ("" if kind == "제정" else
-                    f" — 연혁 첫 행이 제정이 아니라 '{kind or '개정'}'이라 그 전 시행본이 옛 법령명·옛 법령ID로 따로 "
-                    f"있을 수 있음 (이름 검색 연혁에는 개명 전 시행본이 빠짐 — 옛 법령명으로 다시 조회하거나 "
-                    f"law_history_search로 확인)")
+                    f" — 연혁 첫 행이 제정이 아니라 '{kind or '개정'}'이라 그 전 시행본이 법제처 연혁에 없거나 옛 "
+                    f"법령ID(폐지 후 재제정 전의 법)로 따로 있을 수 있음 (같은 법령ID의 개명 전 시행본은 이미 "
+                    f"포함해 찾았음 — 옛 법령명으로 다시 조회하거나 law_history_search로 확인)")
             raise LawGoKrNotFound(f"{as_of_date} 이전 시행본 없음 (연혁의 최초 시행 {first['시행일자']}"
                                   f"{' ' + kind if kind else ''})" + hint)
         chosen = cands[-1]
@@ -1233,6 +1374,12 @@ class LawGoKrClient:
             if art.get("시행예정_부분"):
                 _add_caution(art, self._STAGED_PAST_CAUTION)
         art["적용시행본"] = {k: chosen[k] for k in ("법령명", "시행일자", "공포일자", "공포번호", "제개정구분", "MST")}
+        today = _today_kst()
+        in_force = [r for r in history if r.get("시행일자") and r["시행일자"] <= today] or history
+        latest_name = in_force[-1].get("법령명", "")   # 개명이 시행 예정이어도 '현재' 이름은 오늘 시행 중인 것
+        if chosen.get("법령명") and latest_name and _norm_name(chosen["법령명"]) != _norm_name(latest_name):
+            _add_caution(art, f"기준일({as_of_date}) 당시 법령명은 '{chosen['법령명']}'(현재 '{latest_name}', 같은 법령ID) — "
+                              f"그 사이 조문 번호·체계가 달라졌을 수 있으니 조문 제목과 내용으로 확인")
         art_date = art.get("조문시행일자", "")
         if art_date and art_date > as_of_date:  # 공포 당시 원문으로 폴백했을 때만 이 태그가 남는다
             _add_caution(art, f"이 시행본에 수록된 문안의 조문시행일자({art_date})가 기준일"

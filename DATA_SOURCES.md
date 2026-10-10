@@ -20,7 +20,7 @@ law.go.kr(법제처)은 2026-08 서버컴퓨터 이전 시 `server_ext.py`로 �
 |---|---|---|---|
 | `question` | 질의 | **사전답변 + 서면질의 + 질의회신** (국세청/기재부) | `ruling` |
 | `precedent` | 판례 | **조세심판원 심판(국세) + 국세청 심사·이의·적부 + 법원판례(1심~대법원)** | `precedent` |
-| `statute` | 법령 | 세법 조문 | `statute` |
+| `statute` | 법령 | 세법 조문·기본통칙의 **검색 조각**(조문 전체가 아님 — 정확한 문안은 `law_article_as_of`). 제목·요약·구분은 v5.8에서 채움 | `statute` |
 | `appendForm` | 별표서식 | 별표·서식 | `form` |
 | `formerLibrary` | 전자도서관 | 구 법령해석 자료 | `old_ruling` |
 | `intEpn` | 국제해설 | 국제조세 해설 (검색시 대부분 0건) | `intl` |
@@ -183,7 +183,7 @@ NTST_FLE_ID (검색 응답에 이미 포함)
 | `prec` | 판례 (대법원·하급심) | `court_case_search`, `court_case_detail` |
 | `expc` | 법령해석례 | `law_interpretation_search` |
 | `law` | 현행 법령 검색 / MST 공포 당시 원문 (개정이유·개정문, 과거 기준일 대조용 공포본_참고, 시행 전 개정의 부칙, 통합본 폴백) | `law_history_search`(current_only), `law_revision_reason`, `law_article_as_of`(과거 기준일 대조), `law_addenda_search`(시행 전 개정·mst 헤더) |
-| `eflaw` | 법령 연혁(전체 시행본 목록) / 시행본(MST + 시행일자)의 **시행일 기준 통합본** (v5.7.2) | `law_history_search`, `law_article_as_of`·`law_article_diff`·`law_addenda_search` 내부 |
+| `eflaw` | 법령 연혁(전체 시행본 목록 — 이름 검색은 그 이름 시절만 주므로 개명된 법은 `LID=<법령ID>`로 보강, v5.8) / 시행본(MST + 시행일자)의 **시행일 기준 통합본** (v5.7.2) | `law_history_search`, `law_article_as_of`·`law_article_diff`·`law_addenda_search` 내부 |
 | `admrul` | 행정규칙 (훈령·예규·고시·기본통칙) | `admin_rule_search` |
 | `trty` | 조약 (조세조약 포함) | `treaty_search` |
 | `ordin` | 자치법규 (조례·규칙) | `ordinance_search` |
@@ -198,7 +198,7 @@ NTST_FLE_ID (검색 응답에 이미 포함)
 | 법령 부칙(시행본 통합본 내 `<부칙단위>`) | 공포일자, 공포번호, 시행일 요약 (헤더 `<조문시행일자문자열>` = 그 MST 공포 당시의 조문별 시행일) | 부칙 전문 (시행일·적용례·경과조치), 조문 언급 항 발췌 |
 | 행정규칙(`admrul`) | 일련번호, 행정규칙명, 종류, 소관부처, 발령일자, 발령번호, 시행일자 | 본문 전체(길이 포함) |
 | 조약(`trty`) | 조약일련번호, 조약명, 조약구분, 서명일자, 발효일자 | 본문 전체(길이 포함) |
-| 자치법규(`ordin`) | 일련번호, 자치법규명, 지자체, 공포일자, 시행일자, 제개정구분 | 본문 전체(길이 포함) |
+| 자치법규(`ordin`) | 일련번호(=MST), 자치법규ID, 자치법규명, 지자체, 공포일자, 시행일자, 제개정구분 | 본문(조문+부칙, 길이 포함, `max_chars`/`start_char`로 이어 읽기). **본문은 `lawService target=ordin&MST=<일련번호>`** — `ID=`는 자치법규ID라 다른 번호 체계 (v5.8) |
 
 ### 도구별 구현 특이사항 (실측)
 - **`court_case_search`**: `search=2`(본문 포함 검색), `curt`(법원 필터), `prncYd`(선고일자

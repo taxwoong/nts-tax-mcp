@@ -331,15 +331,18 @@ def treaty_search(keyword: str, serial: str = "", display: int = 10) -> object:
 
 
 @mcp.tool()
-def ordinance_search(keyword: str, region: str = "", serial: str = "", display: int = 20) -> object:
+def ordinance_search(keyword: str, region: str = "", serial: str = "", display: int = 20,
+                     max_chars: int = 10000, start_char: int = 0) -> object:
     """자치법규(조례·규칙) 검색/조회 — 지방세 탄력세율·감면조례 확인용.
 
     serial 없이 호출하면 키워드 검색, region으로 지자체 필터(예: "서울", "용산구").
-    serial(일련번호)을 주면 본문을 반환한다.
+    serial(검색 결과의 '일련번호')을 주면 그 조례의 조문·부칙 본문을 반환한다 — 본문은 응답의
+    자치법규명·지자체·시행일자로 의도한 조례가 맞는지 확인하고 인용하세요.
+    본문이 max_chars보다 길면 응답의 "잘림" 안내대로 start_char를 넘겨 이어 읽는다.
     예: keyword="시세 감면", region="서울" / keyword="도시계획세"
     """
     if serial:
-        return _safe(_law.get_ordinance, serial)
+        return _safe(_law.get_ordinance, serial, max_chars, start_char)
     return _safe(_law.search_ordinances, keyword, region, display)
 
 

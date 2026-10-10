@@ -9,7 +9,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![MCP](https://img.shields.io/badge/MCP-streamable--http-black)
 ![tools](https://img.shields.io/badge/tools-19-brightgreen)
-![status](https://img.shields.io/badge/version-v5.7.3-informational)
+![status](https://img.shields.io/badge/version-v5.8.0-informational)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
 ```bash
@@ -305,7 +305,7 @@ nts-tax-mcp/
 | 파라미터 | 설명 |
 |---|---|
 | `keyword` | 검색어 (필수) |
-| `collections` | 검색 범위 제한. 생략시 전체.<br>`form`(별표서식), `statute`(법령), `ruling`(사전답변·서면질의·질의회신), `precedent`(심판·심사·판례), `old_ruling`(구 법령해석자료), `intl`(국제조세 해설), `hometax`(홈택스 상담사례) |
+| `collections` | 검색 범위 제한. 생략시 전체.<br>`form`(별표서식), `statute`(법령 — 조문 전체가 아니라 검색 조각이니 정확한 문안은 `law_article_as_of`), `ruling`(사전답변·서면질의·질의회신), `precedent`(심판·심사·판례), `old_ruling`(구 법령해석자료), `intl`(국제조세 해설), `hometax`(홈택스 상담사례) |
 | `page` | 페이지 번호 (1부터 시작) |
 | `view_count` | 컬렉션별로 가져올 결과 개수 (**기본 5**, v5.5에서 20→5). 컬렉션 7개에 곱해지므로 20이면 최대 140건 |
 | `date_from` / `date_to` | 검색 기간 (YYYYMMDD) |
@@ -558,9 +558,10 @@ nts-tax-mcp/
 | 파라미터 | 설명 |
 |---|---|
 | `keyword` | 검색어 (예: "취득세 감면") |
-| `region` | 지자체명 필터 (예: "서울", "용산구") |
-| `serial` | 일련번호 — 지정하면 본문 반환 |
+| `region` | 지자체명 필터 (예: "서울", "용산구") — 100건씩 최대 5쪽(500건)을 훑으며 거릅니다. 끝까지 못 훑었는데 결과가 모자라면 `_guidance`로 알립니다 (v5.8) |
+| `serial` | 검색 결과의 `일련번호` — 지정하면 조문·부칙 본문 반환. 응답의 자치법규명·지자체·시행일자로 의도한 조례인지 확인하세요. v5.7.3까지는 이 번호를 `ID=`로 넘겨 엉뚱한 조례가 열렸습니다 (v5.8에서 `MST=`로 수정) |
 | `display` | 결과 수 (기본 20) |
+| `max_chars` / `start_char` | 본문 길이 상한(기본 10000)과 이어 읽기 시작 위치 — 잘리면 응답의 `잘림` 안내대로 (v5.8) |
 
 ## 알려진 제한 사항
 
