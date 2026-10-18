@@ -11,3 +11,5 @@ local_env.bat
 작업로그_*.md
 이사가이드.md
 local_tokens.json
+# 국세청 집행기준 책자에서 뽑은 본문 — 서버가 받아 만드는 자료라 저장소에 올리지 않음 (nts_enforcement.py)
+data/

@@ -4,3 +4,5 @@ requests>=2.31.0
 beautifulsoup4>=4.12.0
 # 심판례·판례 붙임(HWP 5.0) 본문 추출용 — 순수 파이썬, 무의존 (hwp_text.py)
 olefile>=0.46
+# 집행기준 책자(PDF) 본문 추출용 — 순수 파이썬 (nts_enforcement.py, 6.16.1에서 검증)
+pypdf>=6.0

@@ -20,9 +20,49 @@ law.go.kr(법제처)은 2026-08 서버컴퓨터 이전 시 `server_ext.py`로 �
 |---|---|---|---|
 | `question` | 질의 | **사전답변 + 서면질의 + 질의회신** (국세청/기재부) | `ruling` |
 | `precedent` | 판례 | **조세심판원 심판(국세) + 국세청 심사·이의·적부 + 법원판례(1심~대법원)** | `precedent` |
-| `statute` | 법령 | 세법 조문·기본통칙의 **검색 조각**(조문 전체가 아님 — 정확한 문안은 `law_article_as_of`). 제목·요약·구분은 v5.8에서 채움 | `statute` |
+| `statute` | 법령 | 세법 조문·기본통칙·집행기준·국세청 훈령·고시·조세조약의 **검색 조각**(조문 전체가 아님 — 정확한 문안은 `law_article_as_of`). 제목·요약·구분은 v5.8에서 채움, 종류 필터는 v5.9 (아래 표) | `statute` |
 | `appendForm` | 별표서식 | 별표·서식 | `form` |
-| `formerLibrary` | 전자도서관 | 구 법령해석 자료 | `old_ruling` |
+| `formerLibrary` | 전자도서관 | 구 법령해석 자료 · 연도별 책자(세목별 집행기준·세법해석 사례집 등, `LBL1_NM`=책자) | `old_ruling` |
+
+### statute 컬렉션 내 문서 종류 (2026-10-18 실측)
+
+검색 요청 `paramData.mainIdCtl`에 `MAIN_ID`를 넣으면 서버가 그 종류만 돌려준다(`total_count`도 그 종류 기준).
+**`mainIdCtl`은 요청 전체에 걸려** 같은 요청의 다른 컬렉션(`question`·`precedent` 등)이 0건이 되므로,
+`statute_types`를 쓰면 `statute`만 따로 요청한다. 없는 ID(`BM001` 같은 앞부분만, `BM021_02` 등)는 0건.
+
+| `statute_types` 값 | `MAIN_ID` | `LBL1_NM` | 본문(`TEXT_KRN_CNTN`) |
+|---|---|---|---|
+| 법령 | `LBM001_999` | 법령 | 있음(일부 조각은 없음) |
+| 기본통칙 | `BM001_04` | 통칙 | 있음 — HTML 이스케이프된 채 옴 |
+| 집행기준 | `BM001_05` | 집행 | **없음** — 번호·제목(`TEXT_KRN_NM`, 예: `41-0-1 부당행위계산`)만. 검색어 6개로 나온 44건 전부. 본문은 책자에서 채움(아래) |
+| 훈령 | `BM021_03` | 훈령 | 있음 |
+| 고시 | `BM021_01` | 고시 | 있음 |
+| 조세조약 | `BL027_00` | 조약 | 있음 |
+
+집행기준 본문은 검색 응답에 없고, 문서번호도 없어 붙임 조회(`nts_ruling_get_full_text`)로도 못 읽는다.
+본문은 `formerLibrary`의 연도별 집행기준 책자(붙임 파일) 쪽에만 있다 → 아래 "집행기준 책자"로 받아 채운다 (v5.9).
+
+### 집행기준 책자 — 전자도서관(formerLibrary) PDF (2026-10-18 실측, `nts_enforcement.py`)
+
+- 목록: `formerLibrary`에서 `집행기준` 검색 → 147건 = **12종 × 판**(2014·2017·2018·2020·2022·2024). 책 이름은
+  `NTST_PLCN_BK_TTL`, 판은 `PLCN_DT`, 파일은 `NTST_FLE_ID`. 최신판은 12종 모두 **2024.10.31**.
+- 내려받기: 붙임 전문과 같은 2단계(`ACMCMA001MR02` 메타 → `fleDwldUri`). 전부 **PDF**, 권당 2~7MB(합계 약 55MB),
+  60~232쪽. 12권 받기+쪼개기 약 90초.
+- **'종합부동산세 집행기준'과 '증권거래세 집행기준'은 같은 파일**(SHA-1 같음)인 합본이다. 그 밖의 합본: '개별소비세,
+  인지세, 주세, 주류면허법', '국제조세'(국조법·법인세법·소득세법 3부). 합본은 법마다 번호가 1-0-1부터 다시 시작한다.
+- 항목 수: 3,536건(합본 중복 뺌), 14개 법. 국세청 검색의 집행기준 1,613건(검색어 36개로 모은 것) 전부가 책자 항목과
+  맞고(제목 일치 1,602건, 나머지는 검색 쪽 오탈자·책자 쪽 줄바꿈), 본문을 채울 수 있다.
+- **국세청 검색이 법을 잘못 단 항목**: 주류면허법 항목 28건이 `국세기본법`으로, 국제조세 책의 법인세법 65건·소득세법
+  14건이 `국제조세조정에 관한 법률`로 붙어 있다. 번호만으로 찾으면 엉뚱한 항목(예: 국세기본법 12-0-1 '송달의 효력발생'
+  ↔ 주류면허법 12-0-1 '면허의 양도･대여')이 나오므로 제목을 먼저 맞춘다.
+- 번호 형식: `법 조문-시행령 조문-일련번호`(0 = 해당 시행령 조문 없음). 가지번호(`88-152의3-1`), 일련번호 가지(`44-0-3의2`),
+  법 조문 범위(`75∼75의9-0-1` — 검색 쪽은 `75-75의9-1`로 적음)가 있다.
+- PDF 구조(글꼴 이름은 책마다 달라 — 법인세 책은 전부 `Haansoft Batang` — 글자 크기·위치로 가른다): `집행기준` 표시 12pt,
+  번호 11.5pt(조각이 `88-152`·`의`·`3-1`로 갈라져 오기도 함 — 번호는 추출 텍스트에서 읽음), 제목 12pt(번호와 같은 줄,
+  길면 다음 줄로), 본문 11.5pt 이하, 절 제목 12pt(표시 바로 윗줄). 본문 속 인용 `(집행기준 15-6-7)`은 본문 글자 크기라
+  표시와 구분된다. 홀수 쪽 머리글은 장·부 이름(`✲ 인지세 _55`), 짝수 쪽 머리글은 책 제목. 합본의 부는 짝수 쪽에서
+  시작하기도 해 부 첫 줄(`✲증권거래세`)로도 가른다. 끝의 신구조문 대비표·뒤표지는 뺀다.
+- 갱신: 판(`PLCN_DT`)·`file_id`가 같으면 받지 않는다. 새로 쪼갠 건수가 이전의 절반 아래면 형식이 바뀐 신호로 보고 옛 것을 둔다.
 | `intEpn` | 국제해설 | 국제조세 해설 (검색시 대부분 0건) | `intl` |
 | `hometaxCnslThan` | 홈택스 상담사례 | 홈택스 Q&A | `hometax` |
 
@@ -184,7 +224,7 @@ NTST_FLE_ID (검색 응답에 이미 포함)
 | `expc` | 법령해석례 | `law_interpretation_search` |
 | `law` | 현행 법령 검색 / MST 공포 당시 원문 (개정이유·개정문, 과거 기준일 대조용 공포본_참고, 시행 전 개정의 부칙, 통합본 폴백) | `law_history_search`(current_only), `law_revision_reason`, `law_article_as_of`(과거 기준일 대조), `law_addenda_search`(시행 전 개정·mst 헤더) |
 | `eflaw` | 법령 연혁(전체 시행본 목록 — 이름 검색은 그 이름 시절만 주므로 개명된 법은 `LID=<법령ID>`로 보강, v5.8) / 시행본(MST + 시행일자)의 **시행일 기준 통합본** (v5.7.2) | `law_history_search`, `law_article_as_of`·`law_article_diff`·`law_addenda_search` 내부 |
-| `admrul` | 행정규칙 (훈령·예규·고시·기본통칙) | `admin_rule_search` |
+| `admrul` | 행정규칙 (훈령·예규·고시 — **기본통칙·집행기준은 없음**: '기본통칙'·'통칙'·'법인세법 기본통칙' 검색 0건, 2026-10-18) | `admin_rule_search` |
 | `trty` | 조약 (조세조약 포함) | `treaty_search` |
 | `ordin` | 자치법규 (조례·규칙) | `ordinance_search` |
 
@@ -292,7 +332,8 @@ NTST_FLE_ID (검색 응답에 이미 포함)
 | 법원판례 | 있음 (국세 사건, taxlaw.nts.go.kr 자체 색인) | 있음 (지방세 사건) | 있음 (전체 법원 판례 DB, 세목 무관) |
 | 사전답변/질의회신 | 있음 (국세청·기재부) | 행안부 유권해석으로 대응 | 없음 (대신 법령해석례 `expc`) |
 | 법령 원문·연혁 | 현행 조문만 (`statute` 컬렉션) | 없음 | 있음 — 연혁 시행본 + 특정 시점 조문(`law_article_as_of`) |
-| 행정규칙(기본통칙 등) | 없음 | 없음 | 있음 (`admin_rule_search`) |
+| 기본통칙·집행기준 | 있음 (`statute` 컬렉션, `statute_types` — 집행기준 본문은 전자도서관 책자에서, `nts_enforcement_standard`) | 없음 | 없음 |
+| 행정규칙(훈령·고시) | 검색 조각 (`statute` 컬렉션) | 없음 | 있음 — 본문 전체 (`admin_rule_search`) |
 | 조세조약 | 국제조세 해설(`intl`)만, 조약 원문은 없음 | 없음 | 있음 (`treaty_search`, 조약 원문·발효일) |
 | 자치법규(조례) | 없음 | 없음 | 있음 (`ordinance_search`) |
 
@@ -302,15 +343,16 @@ NTS/OLTA의 법원판례와 **별도 DB**라 문서번호 체계도 다르고 �
 
 ---
 
-## 5. MCP 서버 노출 도구 요약 (현재 v5.5, `server_ext.py` 기준 18개)
+## 5. MCP 서버 노출 도구 요약 (현재 v5.9, `server_ext.py` 기준 20개)
 
-### 기본 8개 (`server.py`)
+### 기본 9개 (`server.py`)
 
 | 도구 | 소스 | 주요 파라미터 |
 |---|---|---|
-| `nts_ruling_search` | NTS | keyword, collections, page, view_count(기본 5), date_from/to(클라단), sort, tax_type_filter, include_full_text(기본 false) |
+| `nts_ruling_search` | NTS | keyword, collections, page, view_count(기본 5), date_from/to(클라단), sort, tax_type_filter, include_full_text(기본 false), statute_types(서버측 `mainIdCtl`, v5.9) |
 | `nts_ruling_get_by_doc_no` | NTS | doc_no — 요지·스니펫만 |
 | `nts_ruling_get_full_text` | NTS | doc_no, max_chars, start_char — 붙임 HWP 전문 (v5.5) |
+| `nts_enforcement_standard` | NTS 전자도서관 책자(로컬 보관) | law_name, number(전체 번호=전문 / 앞부분=목록 / 생략=조문별 건수), max_items (v5.9) |
 | `olta_ruling_search` | OLTA | keyword, categories, view_count(최대 3 실효), tax_type_filter |
 | `olta_collection_search` | OLTA | keyword, category, page, view_count, date_from/to(서버단), sort |
 | `olta_get_detail` | OLTA | category, doc_id |

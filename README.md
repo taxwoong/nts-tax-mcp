@@ -2,14 +2,14 @@
 
 **한국 세법·법령 통합 검색 MCP 서버.** 국세청 국세법령정보시스템(taxlaw.nts.go.kr),
 지방세법령정보시스템(olta.re.kr), 법제처 국가법령정보센터(law.go.kr)를 하나의 커넥터로
-묶어 **도구 19개**로 검색합니다. 심판례·판례·질의회신은 결정문 **전문**(붙임 HWP)까지,
+묶어 **도구 20개**로 검색합니다. 심판례·판례·질의회신은 결정문 **전문**(붙임 HWP)까지,
 법령은 조문·부칙·조문 개정 diff까지 Claude 채팅에서 바로 조회하고, 인용한 문서번호의
 실존 여부까지 검증합니다.
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![MCP](https://img.shields.io/badge/MCP-streamable--http-black)
-![tools](https://img.shields.io/badge/tools-19-brightgreen)
-![status](https://img.shields.io/badge/version-v5.8.0-informational)
+![tools](https://img.shields.io/badge/tools-20-brightgreen)
+![status](https://img.shields.io/badge/version-v5.9.0-informational)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
 ```bash
@@ -29,30 +29,31 @@ python server_ext.py          # http://0.0.0.0:8000/mcp (포트는 PORT 환경�
 
 | 영역 | 대상 | 키 필요 |
 |---|---|---|
-| **국세** | 사전답변 · 서면질의 · 질의회신(국세청/기재부/법제처) · 조세심판원 심판청구 · 국세청 심사청구 · 법원 판례 | 불필요 |
+| **국세** | 사전답변 · 서면질의 · 질의회신(국세청/기재부/법제처) · 조세심판원 심판청구 · 국세청 심사청구 · 법원 판례 · 기본통칙 · 집행기준(세목별 책자 본문) | 불필요 |
 | **지방세** | 취득세 · 재산세 · 자동차세 · 지방소득세 · 등록면허세 — 조세심판원 결정례 · 감사원 심사결정례 · 헌재 결정례 · 법원판례 · 법제처/행안부 유권해석 | 불필요 |
-| **법령정보** | 대법원·하급심 판례, 법령 연혁 · 특정 시점 조문 · 조문 개정 diff · 부칙(시행일·적용례), 법령해석례, 행정규칙(기본통칙 등), 조세조약, 자치법규(조례) | `LAW_API_OC` |
+| **법령정보** | 대법원·하급심 판례, 법령 연혁 · 특정 시점 조문 · 조문 개정 diff · 부칙(시행일·적용례), 법령해석례, 행정규칙(훈령·예규·고시 — 기본통칙·집행기준은 국세 쪽), 조세조약, 자치법규(조례) | `LAW_API_OC` |
 
-- **키 없이** `python server.py` → 국세·지방세 도구 **8개**가 바로 동작합니다.
+- **키 없이** `python server.py` → 국세·지방세 도구 **9개**가 바로 동작합니다.
 - **법령정보 11개**를 더 쓰려면 `server_ext.py`로 실행하고 `LAW_API_OC`를 설정하세요.
   [open.law.go.kr](https://open.law.go.kr)에서 무료로 발급받는 기관코드이며, **등록한
   IP에서만** 동작하므로 서버 공인 IP를 사전 등록해야 합니다. 미설정 시 법령정보 도구만
-  `AUTH_ERROR`를 반환하고 나머지 8개는 정상 동작합니다.
+  `AUTH_ERROR`를 반환하고 나머지 9개는 정상 동작합니다.
 
-## 제공 도구 (19개)
+## 제공 도구 (20개)
 
-실제 운영 서버는 `server_ext.py`로 구동되어 19개가 모두 열려 있습니다.
+실제 운영 서버는 `server_ext.py`로 구동되어 20개가 모두 열려 있습니다.
 모든 응답에는 `status` 필드가 포함됩니다 — `OK` / `NOT_FOUND`(결과 없음, **부존재 판단 가능**)
 / `UPSTREAM_ERROR`·`PARSE_ERROR`(원천 접근·해석 실패, **부존재 단정 금지**) / `AUTH_ERROR` /
 `INVALID_INPUT`. 파라미터 상세는 [도구 파라미터 참고](#도구-파라미터-참고)에 있습니다.
 
-### 기본 8개 (국세·지방세, `server.py`)
+### 기본 9개 (국세·지방세, `server.py`)
 
 | 도구 | 용도 |
 |---|---|
-| `nts_ruling_search` | 국세 통합검색 (세목명이 정확하면 서버측 세목필터 자동 적용) |
+| `nts_ruling_search` | 국세 통합검색 (세목명이 정확하면 서버측 세목필터 자동 적용) — 기본통칙·집행기준도 여기서 (`statute_types`, v5.9) |
 | `nts_ruling_get_by_doc_no` | 국세 문서 사건번호로 직접 조회 (요지·스니펫) |
 | `nts_ruling_get_full_text` | **결정문·판결문 전문 조회** — 붙임 HWP를 받아 본문 텍스트로 반환 (v5.5) |
+| `nts_enforcement_standard` | **집행기준 본문** — 번호로 한 건 전문, 조문 단위 목록. 국세청 전자도서관의 세목별 집행기준 책자(PDF)를 서버가 받아 쪼개 둔 것 (v5.9) |
 | `olta_ruling_search` | 지방세 통합검색 (전체 카테고리 미리보기, 카테고리당 3건) |
 | `olta_collection_search` | 지방세 특정 카테고리 깊은 탐색 — 페이지네이션·기간·최신순 정렬 (서버측) |
 | `olta_get_detail` | 지방세 문서 본문 전문 조회 (조세심판원·헌재 지원) |
@@ -71,7 +72,7 @@ python server_ext.py          # http://0.0.0.0:8000/mcp (포트는 PORT 환경�
 | `law_article_diff` | 조문 개정 diff(신구조문 대비) + 현행 문안 시작 시점 특정 + 개정 부칙 연결 (v5.4) |
 | `law_addenda_search` | 법령 부칙(시행일·적용례·경과조치) — 목록/특정 개정 전문/특정 조문 적용시기 발췌 |
 | `law_revision_reason` | 법령 제정·개정이유(◇개정이유·◇주요내용) 원문 — 공포번호·공포연도로 지정, 제정부터 수록 (v5.7) |
-| `admin_rule_search` | 행정규칙(훈령·예규·고시 — 기본통칙·조사사무처리규정 등) 검색/본문 조회 |
+| `admin_rule_search` | 행정규칙(훈령·예규·고시 — 조사사무처리규정·외국환거래규정 등) 검색/본문 조회. 기본통칙·집행기준은 법제처 DB에 없어 `nts_ruling_search`로 |
 | `treaty_search` | 조약(조세조약) 검색/본문 조회 — 원문·발효일 확인 |
 | `ordinance_search` | 자치법규(조례·규칙 — 지방세 탄력세율·감면조례 등) 검색/본문 조회, 지자체 필터 |
 
@@ -89,7 +90,9 @@ Claude 채팅에서 자연어로 물어보면 됩니다.
 - "법령해석례에서 청산금 검색해줘" (→ `law_interpretation_search`)
 - "소득세법 시행령 연혁 보여줘" (→ `law_history_search`)
 - "부가가치세법 17조, 2008년 7월 15일 당시 조문 보여줘" (→ `law_article_as_of`)
-- "법인세법 기본통칙 찾아줘" (→ `admin_rule_search`)
+- "부당행위계산 관련 기본통칙이랑 집행기준 찾아줘" (→ `nts_ruling_search`, `statute_types=["기본통칙", "집행기준"]`)
+- "양도소득세 집행기준 89-154-1 전문 보여줘", "소득세법 제89조 집행기준 다 보여줘" (→ `nts_enforcement_standard`)
+- "조사사무처리규정 본문 보여줘" (→ `admin_rule_search`)
 - "한·홍콩 조세조약 발효일 확인해줘" (→ `treaty_search`)
 - "서울시 취득세 감면조례 찾아줘" (→ `ordinance_search`)
 - "방금 인용한 심판례 번호들 실제 있는 건지 확인해줘" (→ `verify_citations`)
@@ -100,8 +103,8 @@ Claude 채팅에서 자연어로 물어보면 됩니다.
 ```bash
 pip install -r requirements.txt
 
-python server.py         # 기본 8개 (국세·지방세·인용검증) — 키 불필요
-python server_ext.py     # 19개 (기본 8개 + 법제처 11개) — LAW_API_OC 필요
+python server.py         # 기본 9개 (국세·지방세·집행기준·인용검증) — 키 불필요
+python server_ext.py     # 20개 (기본 9개 + 법제처 11개) — LAW_API_OC 필요
 ```
 
 기본적으로 `http://0.0.0.0:8000/mcp` 에서 streamable-http 방식으로 서비스됩니다.
@@ -111,8 +114,8 @@ python server_ext.py     # 19개 (기본 8개 + 법제처 11개) — LAW_API_OC 
 PORT=8765 python server_ext.py
 ```
 
-`server_ext.py`는 `from server import mcp`로 기본 8개를 그대로 물려받고 법제처 11개를
-추가 등록하는 구조라, `server.py` 자체는 수정되지 않습니다. 기본 8개만 필요하면
+`server_ext.py`는 `from server import mcp`로 기본 9개를 그대로 물려받고 법제처 11개를
+추가 등록하는 구조라, `server.py` 자체는 수정되지 않습니다. 기본 9개만 필요하면
 `server.py`를 그대로 실행하면 됩니다.
 
 ### 환경변수 옵션
@@ -127,6 +130,8 @@ PORT=8765 python server_ext.py
 | `NTS_RESPONSE_CHAR_CAP` | 30000 | 검색 응답 총량 상한(자). 넘으면 항목이 많은 컬렉션부터 덜어내고 `_잘림` 안내를 붙임 (v5.5) |
 | `NTS_AUTH_MODE` | 자동 | 접근 토큰 게이트 모드 `off`/`warn`/`enforce` — [접근 제한](#접근-제한-사무실-인원만-쓰게-하기) 참고 |
 | `NTS_PUBLIC_BASE` | 없음 | 외부 공개 주소(예: `https://<서버주소>`). 설정하면 `auth_gate.py add`가 완성된 URL을 출력 |
+| `NTS_ENFORCEMENT_REFRESH_DAYS` | 30 | 집행기준 책자 최신판 확인 주기(일). 판이 바뀐 책만 다시 받음. `0`이면 자동 확인 끔 (v5.9) |
+| `NTS_ENFORCEMENT_PATH` | `data/enforcement.json` | 집행기준 보관소 파일 위치 (v5.9) |
 | `LOG_LEVEL` | INFO | 로깅 레벨 (DEBUG로 두면 세션 재접속/캐시 히트 등이 상세히 찍힘) |
 | `LAW_API_OC` | 없음 (필수) | `server_ext.py` 전용. law.go.kr 가입 시 발급받는 기관코드 — 미설정시 법제처 11개 도구가 `AUTH_ERROR`를 반환. 이 코드로 등록된 IP에서만 동작 (`open.law.go.kr` → OpenAPI 신청내역에서 서버 공인 IP 사전 등록 필요). 개인 식별정보이므로 소스에 직접 적지 말고 배포 환경에서 주입할 것 |
 
@@ -135,7 +140,7 @@ PORT=8765 python server_ext.py
 ### 서버컴퓨터 상시 구동 + Tailscale Funnel (현재 운영 방식, 2026-08~)
 
 Railway 크레딧 소진으로 서버가 다운된 뒤(2026-08-08), 자체 서버컴퓨터에서 상시 구동하는
-방식으로 전환했습니다. 19개 도구(`server_ext.py`)가 이 방식으로 운영됩니다.
+방식으로 전환했습니다. 20개 도구(`server_ext.py`)가 이 방식으로 운영됩니다.
 
 1. 서버컴퓨터 관리자 PowerShell에서 `setup.ps1` 1회 실행 — GitHub에서 소스를 받아
    의존성을 설치하고, Windows 작업 스케줄러에 `nts-tax-mcp`(부팅 시 SYSTEM 권한 자동 실행)를
@@ -147,7 +152,7 @@ Railway 크레딧 소진으로 서버가 다운된 뒤(2026-08-08), 자체 서�
 2. `run_server.bat`이 `PORT=8734`를 설정하고 `server_ext.py`를 실행합니다 (로그:
    `server.log`). `LAW_API_OC`는 이 파일에 직접 적지 않고, `.gitignore`된 로컬 파일
    (`local_env.bat` — `set LAW_API_OC=본인_기관코드` 한 줄)에서 불러옵니다. 이 파일이
-   없으면 법제처 11개 도구만 동작하지 않고 기본 8개는 정상입니다.
+   없으면 법제처 11개 도구만 동작하지 않고 기본 9개는 정상입니다.
 3. [Tailscale](https://tailscale.com)을 설치해 로그인 후 Funnel로 외부에 고정 주소로 노출합니다.
    ```powershell
    tailscale funnel --bg 8734
@@ -193,7 +198,7 @@ python auth_gate.py revoke 홍길동   # 그 사람 URL만 무효화 (서버 재
 
 ### Railway 배포 (레거시)
 
-`Procfile`은 여전히 `python server.py`를 실행하므로, Railway로 배포하면 **기본 8개
+`Procfile`은 여전히 `python server.py`를 실행하므로, Railway로 배포하면 **기본 9개
 도구만** 뜨고 법제처 11개 도구(`server_ext.py`)는 포함되지 않습니다. 크레딧이 소진되면
 서버가 그대로 죽으므로 현재는 권장하지 않지만, 여전히 동작은 합니다.
 
@@ -270,9 +275,10 @@ python nts_search.py "조정대상지역" -c precedent -n 10
 
 ```
 nts-tax-mcp/
-├── server.py                    # MCP 서버 본체 (FastMCP) — 기본 도구 8개 (국세+지방세+인용검증)
-├── server_ext.py                # 확장 진입점 — server.py 8개 + 법제처 11개 = 19개 도구
+├── server.py                    # MCP 서버 본체 (FastMCP) — 기본 도구 9개 (국세+지방세+집행기준+인용검증)
+├── server_ext.py                # 확장 진입점 — server.py 9개 + 법제처 11개 = 20개 도구
 ├── nts_tax_ruling_search.py     # 국세: taxlaw.nts.go.kr 검색 클라이언트
+├── nts_enforcement.py           # 국세: 세목별 집행기준 책자(PDF) 받기·쪼개기·조회 + 주기 확인 (v5.9)
 ├── olta_tax_ruling_search.py    # 지방세: olta.re.kr 검색 클라이언트
 ├── law_go_kr.py                 # 법령정보: law.go.kr Open API 클라이언트 (판례/법령/해석례/행정규칙/조약/자치법규)
 ├── hwp_text.py                  # 붙임 HWP 5.0 → 본문 텍스트 변환 (전문 조회용, v5.5)
@@ -289,13 +295,14 @@ nts-tax-mcp/
 │   └── README.md
 ├── requirements.txt
 ├── LICENSE                      # MIT
-├── CHANGELOG.md                 # 버전별 변경 이력 (v2 ~ v5.6)
+├── CHANGELOG.md                 # 버전별 변경 이력 (v2 ~ v5.9)
 ├── DATA_SOURCES.md              # 자료원 사양·코드표 (세목/카테고리 코드 등)
 ├── Procfile                     # Railway 배포용 (레거시 — 현재 운영은 서버컴퓨터+Tailscale Funnel)
 ├── setup.ps1                    # 서버컴퓨터 최초 설치 스크립트 (소스 다운로드→의존성→작업 스케줄러 등록)
 ├── run_server.bat               # 확장판(server_ext.py) 상시 구동용 — 작업 스케줄러가 부팅 시 실행
 ├── local_env.bat                # (커밋 안 됨) LAW_API_OC 등 개인 식별정보 — .gitignore 처리, 서버컴퓨터에서 직접 생성
-└── local_tokens.json            # (커밋 안 됨) auth_gate.py가 발급한 접근 토큰
+├── local_tokens.json            # (커밋 안 됨) auth_gate.py가 발급한 접근 토큰
+└── data/enforcement.json        # (커밋 안 됨) 서버가 받아 쪼갠 집행기준 본문 — nts_enforcement.py가 만든다
 ```
 
 ## 도구 파라미터 참고
@@ -305,7 +312,8 @@ nts-tax-mcp/
 | 파라미터 | 설명 |
 |---|---|
 | `keyword` | 검색어 (필수) |
-| `collections` | 검색 범위 제한. 생략시 전체.<br>`form`(별표서식), `statute`(법령 — 조문 전체가 아니라 검색 조각이니 정확한 문안은 `law_article_as_of`), `ruling`(사전답변·서면질의·질의회신), `precedent`(심판·심사·판례), `old_ruling`(구 법령해석자료), `intl`(국제조세 해설), `hometax`(홈택스 상담사례) |
+| `collections` | 검색 범위 제한. 생략시 전체.<br>`form`(별표서식), `statute`(법령 조문·기본통칙·집행기준·국세청 훈령·고시·조세조약 — 조문 전체가 아니라 검색 조각이니 정확한 문안은 `law_article_as_of`), `ruling`(사전답변·서면질의·질의회신), `precedent`(심판·심사·판례), `old_ruling`(구 법령해석자료·연도별 집행기준 책자 목록), `intl`(국제조세 해설), `hometax`(홈택스 상담사례) |
+| `statute_types` | `statute` 안에서 이 종류만 받기 (v5.9): `법령`·`기본통칙`·`집행기준`·`훈령`·`고시`·`조세조약` 중 하나 이상. 서버측 필터라 `total_count`도 그 종류 기준. 주면 `collections`를 생략해도 `statute`만 검색하고, 다른 컬렉션과 함께 주면 `statute`만 따로 한 번 더 요청한다. 집행기준 본문은 국세청 검색 응답에 없어 서버의 집행기준 책자 보관소에서 채운다(`source_book`에 판, 1,000자 상한 — 전문은 `nts_enforcement_standard`) |
 | `page` | 페이지 번호 (1부터 시작) |
 | `view_count` | 컬렉션별로 가져올 결과 개수 (**기본 5**, v5.5에서 20→5). 컬렉션 7개에 곱해지므로 20이면 최대 140건 |
 | `date_from` / `date_to` | 검색 기간 (YYYYMMDD) |
@@ -367,6 +375,28 @@ nts-tax-mcp/
 반환: 문서번호별 판정 — `확인`(실존, 제목·날짜·세목 메타 포함) / `미확인`(원천에서 못 찾음,
 `유사문서_후보` 포함 가능) / `판단불가`(원천 장애 — 부존재로 단정 금지). 축약 표기
 (예: "재산세제과-73")는 부분일치로 잡되 6자 미만 입력은 오매치 방지를 위해 제외됩니다.
+
+### `nts_enforcement_standard` (집행기준 본문, v5.9)
+
+| 파라미터 | 설명 |
+|---|---|
+| `law_name` | 법령명 또는 세목 — `소득세법`·`양도소득세`·`법인세법`·`상증법`·`조특법`·`부가세`·`국조법`·`종부세`·`주류면허법` 등 (14개 법) |
+| `number` | 집행기준 번호(법 조문-시행령 조문-일련번호). `89-154-1` → 그 항목 전문 / `89`·`89-154` → 그 조문의 집행기준 목록(제목+앞부분 150자) / 생략 → 조문별 건수 |
+| `max_items` | 목록 최대 건수 (기본 30) |
+
+국세청 검색은 집행기준의 번호·제목만 주고 본문은 주지 않습니다. 본문은 전자도서관의 **세목별 집행기준 책자(PDF)**에만
+있어서, 서버가 최신판 12권(14개 법, 약 3,500건)을 받아 항목별로 쪼개 `data/enforcement.json`에 둡니다
+(`nts_enforcement.py`). 책자는 2년에 한 번꼴로 새 판이 나오므로(2014·2017·2018·2020·2022·2024) 서버가
+`NTS_ENFORCEMENT_REFRESH_DAYS`(기본 30일)마다 목록만 확인하고 판이 바뀐 책만 다시 받습니다. `nts_ruling_search`의
+집행기준 항목도 같은 보관소에서 본문을 채웁니다(`source_book`에 책자 판, 1,000자 상한).
+
+- 응답의 `출처`(책자 판 날짜)를 함께 인용하세요. **책자 발간 뒤의 법령 개정은 반영돼 있지 않을 수 있습니다** — 현행 조문은
+  `law_article_as_of`로 맞춰 보세요.
+- PDF에서 뽑은 글자라 표·계산식은 줄 구조가 무너져 붙어 나올 수 있습니다. 수치는 책자 원문으로 확인하세요.
+- 국세청 검색은 일부 집행기준의 법을 잘못 달아 둡니다(주류면허법 항목 28건을 국세기본법으로, 국제조세 책의 법인세법·소득세법
+  항목 79건을 국조법으로 — 2026-10-18 실측). 본문을 채울 때 제목으로 맞는 항목을 고르고 `law_name`을 책자 쪽으로 바로잡습니다.
+- 보관소가 비어 있으면(최초 기동 직후 받는 중이거나 받기 실패) `UPSTREAM_ERROR` — 자료가 없다는 뜻이 아닙니다.
+  손으로 받으려면 `python nts_enforcement.py refresh` (`--force`면 판이 같아도 다시), 상태는 `python nts_enforcement.py status`.
 
 ### `olta_ruling_search` (지방세)
 
@@ -549,7 +579,7 @@ v5.8부터 `원문` 앞에 섞이던 조문번호·시행일자·`000000`·`N` �
 
 | 파라미터 | 설명 |
 |---|---|
-| `keyword` | 검색어 (예: "법인세법 기본통칙", "조사사무처리규정", "외국환거래규정") |
+| `keyword` | 검색어 (예: "조사사무처리규정", "외국환거래규정"). 기본통칙·집행기준은 법제처 행정규칙 DB에 없어 0건 — `nts_ruling_search`의 `statute_types`로 찾는다 |
 | `serial` | 일련번호 — 지정하면 본문 반환 |
 | `display` | 결과 수 (기본 10) |
 | `article` | 조번호 — `"9-5"`(제9-5조), `"23"`, `"23의2"` 형식. 해당 조문만 잘라 반환. 대형 고시(외국환거래규정 등)는 사실상 필수 |
@@ -577,7 +607,7 @@ v5.8부터 `원문` 앞에 섞이던 조문번호·시행일자·`000000`·`N` �
 ## 알려진 제한 사항
 
 - **법제처(law.go.kr) 도구 11개는 `server_ext.py`로 실행했을 때만 사용 가능**합니다.
-  `server.py`만 단독 실행하면 기본 8개만 노출됩니다.
+  `server.py`만 단독 실행하면 기본 9개만 노출됩니다.
 - **law.go.kr IP 화이트리스트**: 등록되지 않은 IP에서 호출하면 법제처 도구 전체가
   "인증 실패"(`status: AUTH_ERROR`)를 반환합니다. `open.law.go.kr` → OpenAPI
   신청내역에서 서버의 공인 IP를 먼저 등록해야 합니다.
@@ -596,6 +626,9 @@ v5.8부터 `원문` 앞에 섞이던 조문번호·시행일자·`000000`·`N` �
   함께 쓰면 더 안정적입니다.
 - **감사원 심사청구(국세)**: 이 서버의 범위에 포함되지 않습니다. (지방세 감사원 결정례는
   `olta_ruling_search` / `olta_collection_search`로 커버됩니다.)
+- **집행기준 본문은 책자판 기준**: `nts_enforcement_standard`와 검색 결과의 집행기준 본문은 국세청 전자도서관
+  책자(현재 2024.10.31판)에서 뽑은 것이라 책자 발간 뒤의 법령 개정은 반영돼 있지 않고, 표·계산식은 줄 구조가
+  무너져 붙어 나옵니다. 서버 첫 기동 때 `data/enforcement.json`이 없으면 받는 동안(약 90초) `UPSTREAM_ERROR`입니다.
 - **`nts_ruling_get_by_doc_no`**: 전용 상세조회 API가 확인되지 않아, 문서번호를 검색어로
   활용하는 방식으로 구현되어 있습니다.
 - **OLTA HTML 파싱**: olta.re.kr은 HTML로 응답하는 구조라 BeautifulSoup으로 파싱합니다.
@@ -612,7 +645,7 @@ v5.8부터 `원문` 앞에 섞이던 조문번호·시행일자·`000000`·`N` �
 ## 변경 이력
 
 버전별 상세 변경 내용은 [CHANGELOG.md](CHANGELOG.md)를 참고하세요.
-최신은 **v5.6** (2026-09-30) — 붙임 표를 Markdown 표로 복원 · 빈 붙임 처리 · 접근 토큰 게이트.
+최신은 **v5.9** (2026-10-18) — 집행기준 본문(책자 보관소·`nts_enforcement_standard`) · 기본통칙·집행기준 찾기(`statute_types`).
 
 세부 데이터 사양·코드표(세목 코드, 카테고리 코드 등)는 [DATA_SOURCES.md](DATA_SOURCES.md)에 있습니다.
 

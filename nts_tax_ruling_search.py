@@ -66,6 +66,32 @@ COLLECTIONS = {
 }
 ALL_COLLECTIONS = list(COLLECTIONS.values())
 
+# 법령(statute) 컬렉션에는 법령 조문·기본통칙·집행기준·훈령·고시·조세조약이 한데 섞여 온다.
+# 검색 요청의 mainIdCtl에 종류별 MAIN_ID를 주면 서버가 그 종류만 돌려준다 (2026-10-18 실측 —
+# '부당행위계산' 58건 중 BM001_04 → 통칙 14건, BM001_05 → 집행기준 15건). 단 mainIdCtl은 요청 전체에
+# 걸려 함께 요청한 다른 컬렉션이 0건이 되므로, 종류를 거를 때는 statute만 따로 요청한다.
+STATUTE_TYPES = {
+    "법령": "LBM001_999",
+    "기본통칙": "BM001_04",
+    "집행기준": "BM001_05",
+    "훈령": "BM021_03",
+    "고시": "BM021_01",
+    "조세조약": "BL027_00",
+}
+_STATUTE_TYPE_BY_MAIN_ID = {v: k for k, v in STATUTE_TYPES.items()}
+# 집행기준은 검색 응답에 본문(TEXT_KRN_CNTN)이 없다 — 번호·제목만 온다 (2026-10-18 실측 44건 전부).
+# 본문은 서버가 받아 둔 세목별 집행기준 책자(nts_enforcement)에서 채운다
+_ENFORCEMENT_NO_BODY_NOTE = (
+    "일부 집행기준은 본문을 채우지 못해 번호·제목만 나옵니다(국세청 검색 응답에 본문이 없고, 서버의 집행기준 "
+    "책자 보관소에서도 찾지 못함). 제목만으로 내용을 단정하지 말고, nts_enforcement_standard로 같은 조문의 "
+    "집행기준을 보거나 법령·기본통칙·질의회신으로 근거를 확인하세요."
+)
+_ENFORCEMENT_FILLED_NOTE = (
+    "집행기준 본문(summary)은 국세청 전자도서관의 세목별 집행기준 책자(source_book 판)에서 가져왔습니다 — "
+    "책자 발간 뒤의 법령 개정은 반영돼 있지 않을 수 있습니다. 1,000자가 넘으면 잘리니 전문은 "
+    "nts_enforcement_standard(law_name, 번호)로 보세요."
+)
+
 ORG_CODES = {
     "01": "국세청",
     "02": "기획재정부",
@@ -168,7 +194,9 @@ def _fill_non_ruling_fields(item: dict, it: dict, coll: Optional[str]) -> None:
     extra = {}
     if kind == "statute":
         item["title"] = _plain(" ".join(x for x in (it.get("NM"), it.get("TEXT_KRN_NM")) if x), 300) or item["title"]
-        item["doc_type"] = it.get("LBL1_NM") or it.get("STTT_CL_NM") or item["doc_type"]
+        # 종류는 statute_types 값과 같은 이름으로 (LBL1_NM은 '통칙'·'집행'·'조약'처럼 줄여 온다)
+        item["doc_type"] = (_STATUTE_TYPE_BY_MAIN_ID.get(it.get("MAIN_ID")) or it.get("LBL1_NM")
+                            or it.get("STTT_CL_NM") or item["doc_type"])
         item["date"] = it.get("PMG_DT") or item["date"]
         item["tax_type"] = _TAX_NAME_BY_CODE.get(it.get("TLAW_CL_CD_CMN")) or item["tax_type"]
         item["summary"] = _plain(it.get("TEXT_KRN_CNTN"), _SNIPPET_MAX) or item["summary"]
@@ -193,6 +221,34 @@ def _fill_non_ruling_fields(item: dict, it: dict, coll: Optional[str]) -> None:
         item["tax_type"] = (it.get("REQ_TP_NM") or "").split("-")[0] or item["tax_type"]
         item["summary"] = _plain(it.get("ANSWER_STD_CONTENT"), _SNIPPET_MAX) or item["summary"]
     item.update({k: v for k, v in extra.items() if v})
+
+
+def build_search_params(keyword: str, collections: list, start_count: int = 1, view_count: int = 20,
+                        sort: str = "relevance", tax_codes=(), date_base: str = "DCM_RGT_DTM",
+                        main_ids=()) -> dict:
+    """통합검색(ASEISA001MR01) paramData. collections는 원본 컬렉션 코드(statute·formerLibrary 등)."""
+    # 주의: bltnStrtDtm/bltnEndDtm 등 기간 관련 서버 파라미터는 실제 UI에 대응하는
+    # 필드를 확인하지 못해 의도적으로 제외했습니다 (잘못된 값 전송시 검색 자체가
+    # 0건으로 깨지는 문제가 있었습니다). 기간 필터는 search()에서 클라이언트단으로 처리합니다.
+    return {
+        "schVcb": keyword,
+        "startCount": start_count,
+        "collection": ",".join(collections),
+        "wnKey": "",
+        "searchType": "",
+        "sortField": SORT_OPTIONS[sort],
+        "ntstTlawClCdList": list(tax_codes),
+        "icldVcbCtl": [],
+        "exclVcbCtl": [],
+        "rltnStttCtl": [],
+        "schDtBase": date_base,
+        "viewCount": str(view_count),
+        "prtsSprcChiefJdgmYn": "",
+        "prtsAttrYrCtl": [],
+        "prtsPrgrStatCtl": [],
+        "mainIdCtl": list(main_ids),
+        "useSynonymYn": "N",
+    }
 
 
 class NtsParseError(Exception):
@@ -291,6 +347,7 @@ class NtsTaxLawClient:
         tax_type_filter: Optional[str] = None,
         include_full_text: bool = True,
         use_cache: bool = True,
+        statute_types: Optional[list] = None,
     ) -> dict:
         """
         키워드로 통합검색을 수행하고, 컬렉션별로 정리된 결과를 반환합니다.
@@ -311,7 +368,20 @@ class NtsTaxLawClient:
             tax_type_filter: 결과의 세목명(tax_type)에 이 문자열이 포함된 것만 남김
             include_full_text: False면 본문 전문(content, detail_content)을 생략하고 요약만 반환
             use_cache: True면 동일 조건 검색을 짧은 시간 내 재호출시 캐시된 결과를 반환
+            statute_types: 법령(statute) 컬렉션을 STATUTE_TYPES 종류로 좁힌다 (서버측 필터라 total_count도
+                그 종류 기준). 주면 statute를 반드시 검색한다 — collections를 생략하면 statute만,
+                다른 컬렉션과 함께 주면 statute는 따로 한 번 더 요청한다.
         """
+        main_ids = []
+        if statute_types:
+            unknown = [t for t in statute_types if t not in STATUTE_TYPES]
+            if unknown:
+                raise ValueError(f"statute_types는 {list(STATUTE_TYPES)} 중에서 고르세요 (받은 값: {unknown})")
+            main_ids = [STATUTE_TYPES[t] for t in statute_types]
+            if collections is None:
+                collections = ["statute"]
+            elif "statute" not in collections:
+                collections = list(collections) + ["statute"]
         if collections is None:
             collections = ALL_COLLECTIONS
 
@@ -331,7 +401,7 @@ class NtsTaxLawClient:
                 keyword=keyword, collections=collections, page=page,
                 view_count=view_count, date_from=date_from, date_to=date_to,
                 sort=sort, tax_type_filter=tax_type_filter,
-                include_full_text=include_full_text,
+                include_full_text=include_full_text, statute_types=statute_types,
             )
             cached = self._cache.get(cache_key)
             if cached and (time.time() - cached[0]) < self._cache_ttl:
@@ -347,31 +417,26 @@ class NtsTaxLawClient:
             else:
                 client_tax_filter = tax_type_filter
 
-        param_data = {
-            "schVcb": keyword,
-            "startCount": start_count,
-            "collection": ",".join(collections),
-            "wnKey": "",
-            "searchType": "",
-            "sortField": SORT_OPTIONS[sort],
-            "ntstTlawClCdList": server_tax_codes,
-            "icldVcbCtl": [],
-            "exclVcbCtl": [],
-            "rltnStttCtl": [],
-            "schDtBase": date_base,
-            "viewCount": str(fetch_view_count),
-            "prtsSprcChiefJdgmYn": "",
-            "prtsAttrYrCtl": [],
-            "prtsPrgrStatCtl": [],
-            "mainIdCtl": [],
-            "useSynonymYn": "N",
-        }
-        # 주의: bltnStrtDtm/bltnEndDtm 등 기간 관련 서버 파라미터는 실제 UI에 대응하는
-        # 필드를 확인하지 못해 의도적으로 제외했습니다 (잘못된 값 전송시 검색 자체가
-        # 0건으로 깨지는 문제가 있었습니다). 기간 필터는 아래에서 클라이언트단으로 처리합니다.
+        def _param_data(colls, mids):
+            return build_search_params(keyword, colls, start_count=start_count, view_count=fetch_view_count,
+                                       sort=sort, tax_codes=server_tax_codes, date_base=date_base, main_ids=mids)
 
-        raw = self._post_search(param_data)
-        result = self._parse(raw, include_full_text=include_full_text)
+        if main_ids:
+            # mainIdCtl은 요청 전체에 걸린다 — 다른 컬렉션은 필터 없이 따로 요청해 합친다
+            parsed = self._parse(self._post_search(_param_data(["statute"], main_ids)),
+                                 include_full_text=include_full_text)
+            others = [c for c in collections if c != "statute"]
+            if others:
+                parsed.update(self._parse(self._post_search(_param_data(others, [])),
+                                          include_full_text=include_full_text))
+            if "statute" in parsed:
+                parsed["statute"]["statute_types"] = list(statute_types)
+            # 요청한 컬렉션 순서대로 (서버가 모르는 이름을 돌려주면 뒤에 붙인다)
+            result = {c: parsed.pop(c) for c in collections if c in parsed}
+            result.update(parsed)
+        else:
+            result = self._parse(self._post_search(_param_data(collections, [])),
+                                 include_full_text=include_full_text)
 
         if client_tax_filter:
             result = self._apply_tax_type_filter(result, client_tax_filter)
@@ -384,6 +449,7 @@ class NtsTaxLawClient:
                     continue
                 coll_data["items"] = coll_data.get("items", [])[:view_count]
 
+        self._fill_enforcement(result)
         result = self._attach_guidance(result, keyword)
 
         if use_cache and cache_key:
@@ -746,6 +812,37 @@ class NtsTaxLawClient:
                 "filtered_by_tax_type": tax_type_filter,
             }
         return filtered
+
+    @staticmethod
+    def _fill_enforcement(result: dict, store=None) -> None:
+        """본문 없는 집행기준을 집행기준 책자 보관소에서 채운다. 못 채운 것이 남으면 statute 컬렉션에 안내를
+        단다 (빈 요약을 '내용 없음'으로 읽지 않도록). 국세청 검색이 법을 잘못 달아 둔 항목(주류면허법 항목을
+        국세기본법으로 등)은 책자 쪽 법령명으로 바로잡는다 — 그래야 번호로 다시 찾을 때 엉뚱한 항목이 안 나온다."""
+        statute = result.get("statute")
+        if not isinstance(statute, dict):
+            return
+        targets = [it for it in statute.get("items", []) if it.get("doc_type") == "집행기준" and not it.get("summary")]
+        if not targets:
+            return
+        import nts_enforcement as ne
+        store = store or ne.default_store()
+        filled = missing = 0
+        for it in targets:
+            law, title = it.get("law_name") or "", it.get("title") or ""
+            rest = title[len(law):].strip() if law and title.startswith(law) else title
+            m = re.match(r"(\S+)\s*(.*)$", rest)
+            hit = store.find(law, m.group(1), m.group(2)) if m else None
+            if not hit:
+                missing += 1
+                continue
+            it["summary"] = _plain(hit["text"], _SNIPPET_MAX)
+            it["source_book"] = f"{hit['book']} {hit['edition']}판"
+            if hit["law"] != law:
+                it["law_name"] = hit["law"]
+                it["title"] = f"{hit['law']} {hit['no']} {hit['title'] or m.group(2)}".strip()
+            filled += 1
+        notes = ([_ENFORCEMENT_FILLED_NOTE] if filled else []) + ([_ENFORCEMENT_NO_BODY_NOTE] if missing else [])
+        statute["안내"] = " / ".join(notes)
 
     @staticmethod
     def _attach_guidance(result: dict, keyword: str) -> dict:

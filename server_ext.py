@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 server_ext.py — nts-tax-mcp 확장 진입점
-기존 server.py의 도구 8개(국세 NTS + 붙임 전문 + 지방세 olta + 인용검증)를 그대로 물려받고,
+기존 server.py의 도구 9개(국세 NTS + 붙임 전문 + 집행기준 + 지방세 olta + 인용검증)를 그대로 물려받고,
 법제처 law.go.kr Open API 도구 11개를 추가한다. 커넥터 하나로 통합 운영.
 
 실행: PORT=8734 LAW_API_OC=<발급받은 기관코드> python server_ext.py
@@ -294,11 +294,14 @@ def law_revision_reason(law_name: str, promul_no: str = "", year: str = "",
 def admin_rule_search(keyword: str, serial: str = "", display: int = 10,
                       article: str = "", max_chars: int = 10000,
                       start_char: int = 0) -> object:
-    """행정규칙(훈령·예규·고시) 검색/조회 — 기본통칙·조사사무처리규정·국세청 고시·외국환거래규정.
+    """행정규칙(훈령·예규·고시) 검색/조회 — 조사사무처리규정·국세청 고시·외국환거래규정.
+
+    **기본통칙·집행기준은 여기 없다** (법제처 행정규칙 DB에 실리지 않음 — '기본통칙'·'통칙' 검색 0건).
+    기본통칙·집행기준은 nts_ruling_search(statute_types=["기본통칙", "집행기준"])로 찾는다.
 
     serial 없이 호출하면 키워드 검색(규칙명·종류·소관부처·발령일자 목록),
     serial(일련번호)을 주면 본문을 반환한다.
-    예: "법인세법 기본통칙", "조사사무처리규정", "외국환거래규정"
+    예: "조사사무처리규정", "외국환거래규정"
 
     외국환거래규정(30만 자) 같은 대형 고시는 전문이 max_chars에 잘리므로
     article에 조번호를 지정해 해당 조문만 받는 것을 권장한다
@@ -350,8 +353,10 @@ if __name__ == "__main__":
     import uvicorn
 
     from auth_gate import TokenGate, describe
+    from server import start_enforcement_refresh
 
-    logger.info("nts-tax-mcp 확장판 기동 — 기존 8개 + 법제처 11개 도구")
+    logger.info("nts-tax-mcp 확장판 기동 — 기존 9개 + 법제처 11개 도구")
+    start_enforcement_refresh()
 
     # mcp.run() 대신 앱을 직접 만들어 접근 토큰 게이트를 한 겹 두른다.
     # (mcp.run(transport="streamable-http")이 내부적으로 하던 것과 동일한 구성)

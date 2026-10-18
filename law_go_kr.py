@@ -1120,9 +1120,9 @@ class LawGoKrClient:
                                   f"promul_no·year 없이 호출하면 개정 목록을 볼 수 있습니다")
         return out
 
-    # ---------- 행정규칙 (훈령·예규·고시·기본통칙) ----------
+    # ---------- 행정규칙 (훈령·예규·고시 — 기본통칙·집행기준은 없음, 국세청 statute 컬렉션에 있다) ----------
     def search_admin_rules(self, keyword: str, display: int = 10, page: int = 1):
-        """target=admrul 행정규칙 검색 — 기본통칙·조사사무처리규정·고시 등."""
+        """target=admrul 행정규칙 검색 — 조사사무처리규정·고시 등."""
         xml = _get("lawSearch.do", target="admrul", query=keyword, display=display, page=page)
         items = _parse_items(xml, "admrul")
         return [{

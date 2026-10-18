@@ -47,7 +47,9 @@ mcp = FastMCP(
         "지방세(취득세·재산세 등 조세심판원·감사원·헌재·자치단체 질의회신)는 olta_ruling_search를 "
         "사용하세요. 국세/지방세를 모두 아우르는 질문이면 nts_and_olta_precedent_search로 "
         "한 번에 검색하고 중복 없이 결과를 받을 수 있습니다. 답변 초안에 인용한 문서번호는 "
-        "verify_citations로 실존 여부를 일괄 검증할 수 있습니다.\n"
+        "verify_citations로 실존 여부를 일괄 검증할 수 있습니다. 기본통칙·집행기준은 "
+        "nts_ruling_search(statute_types=['기본통칙','집행기준'])로 찾고, 집행기준 전문·조문별 목록은 "
+        "nts_enforcement_standard로 보세요 — 법제처 admin_rule_search에는 없습니다.\n"
         "**검색 결과의 본문은 전문이 아니라 검색어 주변 스니펫입니다** — 심판·심사는 "
         "'결정내용은 붙임과 같습니다.'만 나옵니다. 결정 이유·처분개요·청구주장·사실관계가 "
         "필요하면 검색으로 문서번호를 찾은 뒤 nts_ruling_get_full_text로 전문을 읽으세요. "
@@ -196,20 +198,28 @@ def nts_ruling_search(
     sort: str = "relevance",
     tax_type_filter: Optional[str] = None,
     include_full_text: bool = False,
+    statute_types: Optional[list] = None,
 ) -> dict:
     """
     국세법령정보시스템 통합검색.
 
     사전답변·서면질의·질의회신(국세청/기획재정부/법제처), 조세심판원 심판청구,
-    국세청 심사청구, 법원 판례, 법령을 키워드로 검색합니다.
+    국세청 심사청구, 법원 판례, 법령·기본통칙·집행기준을 키워드로 검색합니다.
+    **기본통칙·집행기준은 이 도구로 찾습니다** (법제처 admin_rule_search에는 없음).
 
     Args:
         keyword: 검색어 (예: "조정대상지역", "부당행위계산 부인")
         collections: 검색할 범위. 생략시 전체 검색.
-            선택 가능 값: "form"(별표서식), "statute"(법령·기본통칙 — 검색어가 든 조각이지 조문 전체가 아니니
-            정확한 문안은 law_article_as_of로 확인),
+            선택 가능 값: "form"(별표서식), "statute"(법령 조문·기본통칙·집행기준·국세청 훈령·고시·조세조약이
+            섞여 옴 — 검색어가 든 조각이지 조문 전체가 아니니 정확한 문안은 law_article_as_of로 확인),
             "ruling"(사전답변·서면질의·질의회신), "precedent"(심판·심사·판례),
-            "old_ruling"(구 법령해석자료), "intl"(국제조세 해설), "hometax"(홈택스 상담사례)
+            "old_ruling"(구 법령해석자료·연도별 집행기준 책자 목록), "intl"(국제조세 해설), "hometax"(홈택스 상담사례)
+        statute_types: statute 안에서 이 종류만 받기 — "법령", "기본통칙", "집행기준", "훈령", "고시",
+            "조세조약" 중 하나 이상 (예: ["기본통칙", "집행기준"]). 섞여 오면 view_count 몇 건 안에
+            조문이 먼저 차서 통칙·집행기준이 밀려나므로, 통칙·집행기준을 찾을 때는 이 값을 주세요.
+            주면 collections를 생략해도 statute만 검색합니다. 집행기준 본문은 국세청 검색 응답에 없어
+            서버가 받아 둔 집행기준 책자에서 채웁니다(source_book에 판 날짜, 1,000자 상한 — 전문은
+            nts_enforcement_standard).
         page: 페이지 번호 (1부터 시작). "더 보여줘" 같은 후속 요청시 2, 3...으로 증가
         view_count: 컬렉션별로 가져올 결과 개수 (기본 5). 넓게 훑어야 할 때만 늘리세요 —
             컬렉션 7개에 곱해지므로 20으로 올리면 최대 140건이 한 번에 돌아옵니다
@@ -253,6 +263,7 @@ def nts_ruling_search(
         sort=sort,
         tax_type_filter=tax_type_filter,
         include_full_text=include_full_text,
+        statute_types=statute_types,
     ))
 
 
@@ -317,6 +328,92 @@ def nts_ruling_get_full_text(doc_no: str, max_chars: int = 30000,
         '비고'로 알립니다.
     """
     return _tool_guard(_client.get_full_text, doc_no, max_chars, start_char)
+
+
+_ENFORCEMENT_CAVEAT = (
+    "국세청 세목별 집행기준 책자(PDF)에서 뽑은 글자입니다 — 표·계산식은 줄 구조가 무너져 붙어 나올 수 있으니 "
+    "수치는 책자 원문으로 확인하세요. 집행기준은 법령이 아니라 국세청의 집행 지침이고, 책자 발간(판 날짜) 뒤의 "
+    "법령 개정은 반영돼 있지 않을 수 있으니 현행 조문(law_article_as_of)과 맞춰 보세요."
+)
+
+
+def _enforcement_standard(law_name: str, number: str, max_items: int) -> dict:
+    import nts_enforcement as ne
+
+    law = ne.normalize_law(law_name)
+    if not law:
+        return {"status": "INVALID_INPUT", "오류": f"집행기준이 있는 법을 알아보지 못했습니다: {law_name!r}",
+                "가능": list(ne.LAWS)}
+    store = ne.default_store()
+    if not store.available():
+        return {"status": "UPSTREAM_ERROR",
+                "오류": "서버의 집행기준 보관소가 비어 있습니다 (책자를 아직 받지 못했거나 받기에 실패).",
+                "_guidance": "자료가 없다는 뜻이 아닙니다. 서버 관리자가 'python nts_enforcement.py refresh'로 "
+                             "책자를 받아야 합니다. 그동안은 nts_ruling_search(statute_types=['집행기준'])로 "
+                             "번호·제목만 확인할 수 있습니다."}
+    no = ne.normalize_no(number)
+    if re.fullmatch(ne.NO_RE, no):
+        it = store.find(law, no)
+        if not it:
+            near = [x["no"] for x in store.browse(law, no.split("-")[0])]
+            return {"status": "NOT_FOUND",
+                    "_guidance": f"{law}에 집행기준 {no}가 없습니다. 같은 조문(제{no.split('-')[0]}조)의 집행기준: "
+                                 f"{near[:40] or '없음'} — 번호가 바뀌었을 수 있으니 nts_ruling_search"
+                                 f"(statute_types=['집행기준'])로 제목을 검색해 보세요."}
+        return {"status": "OK", "법령": it["law"], "번호": it["no"], "제목": it["title"], "절": it["heading"],
+                "본문": it["text"], "출처": f"{it['book']} {it['edition']}판 (PDF {it['page']}쪽)",
+                "안내": _ENFORCEMENT_CAVEAT}
+
+    items = store.browse(law, no)
+    if not items:
+        return {"status": "NOT_FOUND",
+                "_guidance": f"{law}에 '{no}'로 시작하는 집행기준이 없습니다. number를 비우면 조문별 건수를 봅니다."}
+    books = sorted({f"{x['book']} {x['edition']}판" for x in items})
+    if not no:
+        per_article = {}
+        for x in items:
+            art = x["no"].split("-")[0]
+            per_article[art] = per_article.get(art, 0) + 1
+        return {"status": "OK", "법령": law, "총건수": len(items), "조문별_건수": per_article, "출처": books,
+                "안내": "number에 법 조문 번호('89')나 '89-154'를 주면 그 조문의 집행기준 목록, "
+                        "'89-154-1'처럼 전체 번호를 주면 전문을 줍니다."}
+    out = {"status": "OK", "법령": law, "조문": no, "건수": len(items),
+           "항목": [{"번호": x["no"], "제목": x["title"],
+                    "요약": x["text"][:150] + ("…" if len(x["text"]) > 150 else "")} for x in items[:max_items]],
+           "출처": books, "안내": "전문은 number에 전체 번호를 주어 다시 조회하세요. " + _ENFORCEMENT_CAVEAT}
+    if len(items) > max_items:
+        out["잘림"] = f"{len(items)}건 중 {max_items}건만 표시 — number를 더 좁히거나 max_items를 늘리세요."
+    return out
+
+
+@mcp.tool()
+def nts_enforcement_standard(law_name: str, number: str = "", max_items: int = 30) -> dict:
+    """
+    국세청 세목별 집행기준 본문 — 번호로 한 건 전문, 또는 조문 단위 목록.
+
+    국세청 검색(nts_ruling_search)은 집행기준의 번호·제목만 주고 본문은 주지 않습니다. 이 도구는 국세청
+    전자도서관의 세목별 집행기준 책자(PDF 최신판 — 14개 법, 약 3,500건)를 서버가 받아 항목별로 쪼개 둔 것에서
+    찾습니다. 책자는 2년에 한 번꼴로 새 판이 나오고, 서버가 30일마다 새 판을 확인합니다.
+    인용할 때는 응답의 '출처'(책자 판 날짜)를 함께 밝히세요.
+
+    Args:
+        law_name: 법령명 또는 세목 (예: "소득세법", "양도소득세", "법인세법", "상증법", "조특법",
+            "부가가치세", "국세기본법", "국조법", "종부세", "주류면허법")
+        number: 집행기준 번호 (법 조문-시행령 조문-일련번호).
+            "89-154-1" → 그 항목 전문 / "89" 또는 "89-154" → 그 조문의 집행기준 목록(제목+앞부분)
+            / 생략 → 그 법의 조문별 건수
+        max_items: 목록 최대 건수 (기본 30)
+    """
+    return _tool_guard(_enforcement_standard, law_name, number, max_items)
+
+
+def start_enforcement_refresh():
+    """집행기준 책자 최신판을 주기적으로 확인하는 백그라운드 스레드를 켠다.
+    NTS_ENFORCEMENT_REFRESH_DAYS(기본 30일)마다 목록을 보고 판이 바뀐 책만 받는다. 0이면 끈다."""
+    import nts_enforcement
+    days = float(os.environ.get("NTS_ENFORCEMENT_REFRESH_DAYS", "30"))
+    return nts_enforcement.start_background_refresh(
+        lambda: NtsTaxLawClient(verify_ssl=_nts_verify_ssl, timeout=180), days)
 
 
 @mcp.tool()
@@ -704,4 +801,5 @@ def verify_citations(doc_nos: list, search_local_tax: bool = True) -> dict:
 
 
 if __name__ == "__main__":
+    start_enforcement_refresh()
     mcp.run(transport="streamable-http")
