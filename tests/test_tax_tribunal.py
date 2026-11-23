@@ -9,6 +9,7 @@ law.go.kr에는 접속하지 않는다 (law_go_kr._get을 가짜로 바꿔 끼�
     python tests/test_tax_tribunal.py
     python -m pytest tests/test_tax_tribunal.py -q
 """
+import copy
 import sys
 from pathlib import Path
 
@@ -211,14 +212,87 @@ def test_new_tool_routes_and_validates():
         assert server_ext.tax_tribunal_decision_search(keyword="없는말")["status"] == "NOT_FOUND"
 
 
-def test_search_results_carry_tribunal_hint():
+def test_topic_search_includes_law_go_kr_decisions_without_duplicates():
+    # 국세청 결과에 이미 있는 조심 2023서9465(표기만 다름)는 빼고, 국세청에 없는 2건만 붙인다
+    rows = {"가지급금": [("1", "조심 2023서9465", "2023.11.21"), ("182286", "조심 2020중2305", "2021.07.06"),
+                      ("2", "국심2007서4946", "2010.03.25")]}
+    nts_hit = {"precedent": {"total_count": 1, "items": [{"doc_no": "조심-2023-서-9465", "title": "x"}]}}
     old = server._client.search
-    server._client.search = lambda **kw: {"precedent": {"total_count": 0, "items": []}}
+    server._client.search = lambda **kw: copy.deepcopy(nts_hit)  # 호출마다 새 dict (응답에 키를 덧붙이므로)
     try:
-        assert "_조세심판원_보충" in server.nts_ruling_search(keyword="가지급금")
-        assert "_조세심판원_보충" in server.nts_ruling_search(keyword="가지급금", collections=["precedent"])
-        assert "_조세심판원_보충" not in server.nts_ruling_search(keyword="가지급금", collections=["ruling"])
-        assert "_조세심판원_보충" not in server.nts_ruling_search(keyword="가지급금", statute_types=["집행기준"])
+        with _FakeGet(rows) as fake:
+            r = server.nts_ruling_search(keyword="가지급금", collections=["precedent"], view_count=5)
+            sec = r["law_tax_tribunal"]
+            assert [i["doc_no"] for i in sec["items"]] == ["조심 2020중2305", "국심2007서4946"]
+            assert sec["다른_결과와_겹쳐_제외"] == 1 and sec["items"][0]["serial"] == "182286"
+            params = fake.calls[0][1]
+            assert params["search"] == 1 and params["sort"] == "ddes"
+            # 전체 검색(collections 생략)도 붙고, 심판·판례를 안 찾는 검색에는 안 붙는다
+            assert "law_tax_tribunal" in server.nts_ruling_search(keyword="가지급금")
+            assert "law_tax_tribunal" not in server.nts_ruling_search(keyword="가지급금", collections=["ruling"])
+            assert "law_tax_tribunal" not in server.nts_ruling_search(keyword="가지급금", statute_types=["집행기준"])
+            # 세목 필터는 이 묶음에 적용되지 않음을 알린다
+            r = server.nts_ruling_search(keyword="가지급금", collections=["precedent"], tax_type_filter="법인세")
+            assert "주의" in r["law_tax_tribunal"]
+    finally:
+        server._client.search = old
+
+
+def test_topic_section_widens_to_body_and_reports_failure():
+    with _FakeGet({}) as fake:
+        sec = server._tt_topic_section("없는주제", 5)
+        assert sec["status"] == "NOT_FOUND" and sec["검색범위"].startswith("본문")
+        assert [c[1]["search"] for c in fake.calls] == [1, 2]
+    with _FakeGet(fail=requests.exceptions.ConnectTimeout("timeout")):
+        sec = server._tt_topic_section("가지급금", 5)
+        assert sec["status"] == "UPSTREAM_ERROR" and "단정하지" in sec["_guidance"]
+    with _FakeGet(fail=law_go_kr.LawGoKrAuthError("OC 미설정")):
+        sec = server._tt_topic_section("가지급금", 5)
+        assert sec["status"] == "SKIPPED"
+    # 국세청 검색이 실패해도 법제처 묶음은 붙는다
+    old = server._client.search
+    server._client.search = lambda **kw: (_ for _ in ()).throw(requests.exceptions.ReadTimeout("t"))
+    try:
+        with _FakeGet({"가지급금": [("182286", "조심 2020중2305", "2021.07.06")]}):
+            r = server.nts_ruling_search(keyword="가지급금", collections=["precedent"])
+            assert r["status"] == "UPSTREAM_ERROR" and r["law_tax_tribunal"]["items"]
+    finally:
+        server._client.search = old
+
+
+def test_combined_search_includes_law_go_kr_decisions():
+    old_n, old_o = server._client.search, server._olta_client.search
+    server._client.search = lambda **kw: {"precedent": {"total_count": 0, "items": []}, "status": "NOT_FOUND"}
+    server._olta_client.search = lambda **kw: {"tax_tribunal": {"total_count": 1, "items": [
+        {"doc_no": "조심2024지0063"}]}, "excluded_count": 0}
+    try:
+        rows = {"취득세": [("1", "조심 2024지0063", "2026.04.23"), ("182286", "조심 2020중2305", "2021.07.06")]}
+        with _FakeGet(rows):
+            r = server.nts_and_olta_precedent_search(keyword="취득세")
+            assert r["status"] == "OK"
+            assert [i["doc_no"] for i in r["law_tax_tribunal"]["items"]] == ["조심 2020중2305"]
+    finally:
+        server._client.search, server._olta_client.search = old_n, old_o
+
+
+def test_topic_section_asks_review_period_only_without_dates():
+    rows = {"가지급금": [("182286", "조심 2020중2305", "2021.07.06")]}
+    with _FakeGet(rows):
+        sec = server._tt_topic_section("가지급금", 5)
+        assert "date_from/date_to" in sec["검토시점_확인"] and "묻지 말고" in sec["검토시점_확인"]
+        sec = server._tt_topic_section("가지급금", 5, date_from="20200101", date_to="20211231")
+        assert "검토시점_확인" not in sec
+    assert "되물은" in server.mcp.instructions
+
+
+def test_topic_search_does_not_mutate_client_cache():
+    cached = {"precedent": {"total_count": 1, "items": [{"doc_no": "조심-2023-서-9465"}]}}
+    old = server._client.search
+    server._client.search = lambda **kw: cached  # 실제 캐시처럼 같은 dict를 계속 돌려준다
+    try:
+        with _FakeGet({}):
+            server.nts_ruling_search(keyword="가지급금", collections=["precedent"])
+        assert "law_tax_tribunal" not in cached and len(cached["precedent"]["items"]) == 1
     finally:
         server._client.search = old
 
@@ -226,6 +300,7 @@ def test_search_results_carry_tribunal_hint():
 def test_instructions_mention_tribunal_gap():
     text = server.mcp.instructions
     assert "tax_tribunal_decision_search" in text and "국세법령정보시스템에 다 있지 않습니다" in text
+    assert "law_tax_tribunal" in text
 
 
 def test_expired_cert_fallback_only_for_expiry():

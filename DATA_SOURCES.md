@@ -351,14 +351,14 @@ NTS/OLTA의 법원판례와 **별도 DB**라 문서번호 체계도 다르고 �
 
 | 도구 | 소스 | 주요 파라미터 |
 |---|---|---|
-| `nts_ruling_search` | NTS | keyword, collections, page, view_count(기본 5), date_from/to(클라단), sort, tax_type_filter, include_full_text(기본 false), statute_types(서버측 `mainIdCtl`, v5.9) |
+| `nts_ruling_search` | NTS (+ law.go.kr ttSpecialDecc) | keyword, collections, page, view_count(기본 5), date_from/to(클라단), sort, tax_type_filter, include_full_text(기본 false), statute_types(서버측 `mainIdCtl`, v5.9). precedent 검색 시 `law_tax_tribunal` 묶음(법제처 조세심판원 결정, 의결일 최신순, 이번 결과와 겹치는 건 제외, v5.11) |
 | `nts_ruling_get_by_doc_no` | NTS (+ law.go.kr ttSpecialDecc) | doc_no — 요지·스니펫만. 조심·국심 번호가 NTS에 없으면 법제처 재결례로 (v5.10) |
 | `nts_ruling_get_full_text` | NTS (+ law.go.kr ttSpecialDecc) | doc_no, max_chars, start_char — 붙임 HWP 전문 (v5.5). 조심·국심이 NTS에 없거나 붙임이 없으면 법제처 재결례 전문 (v5.10) |
 | `nts_enforcement_standard` | NTS 전자도서관 책자(로컬 보관) | law_name, number(전체 번호=전문 / 앞부분=목록 / 생략=조문별 건수), max_items (v5.9) |
 | `olta_ruling_search` | OLTA | keyword, categories, view_count(최대 3 실효), tax_type_filter |
 | `olta_collection_search` | OLTA | keyword, category, page, view_count, date_from/to(서버단), sort |
 | `olta_get_detail` | OLTA | category, doc_id |
-| `nts_and_olta_precedent_search` | 둘 다 | keyword, view_count, tax_type_filter |
+| `nts_and_olta_precedent_search` | NTS·OLTA·law.go.kr | keyword, view_count, tax_type_filter — `law_tax_tribunal` 묶음 포함(국세·지방세 결과와 겹치는 건 제외, v5.11) |
 | `verify_citations` | NTS·OLTA·law.go.kr | doc_nos(최대 10), search_local_tax — 문서번호 실존 일괄 검증 (v5.4). 조심·국심은 NTS 다음에 법제처 재결례 확인 (v5.10) |
 
 `verify_citations` 매칭 규칙: 정규화(공백·하이픈 제거) 후 ① 완전일치 → ② **접미 일치**

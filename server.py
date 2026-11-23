@@ -19,6 +19,7 @@ nts_and_olta_precedent_search 도구는 문서번호 정규화 기반으로 중�
     환경변수 PORT 를 자동으로 읽어 바인딩합니다.
 """
 
+import copy
 import json
 import logging
 import os
@@ -54,9 +55,14 @@ mcp = FastMCP(
         "nts_enforcement_standard로 보세요 — 법제처 admin_rule_search에는 없습니다.\n"
         "**조세심판원 결정은 국세법령정보시스템에 다 있지 않습니다** — 국세청 쪽에서 못 찾았다고 "
         "실존하지 않는다고 단정하지 마세요. 문서번호 조회·전문·인용 검증 도구는 조심·국심 번호를 "
-        "국가법령정보센터(법제처) 조세심판원 재결례에서 자동으로 다시 찾습니다. 키워드로 심판례를 "
-        "찾을 때도 nts_ruling_search와 함께 tax_tribunal_decision_search(법제처, 조세심판원 결정 약 14만 건, "
-        "국세·지방세, 전문 포함)를 확인하세요.\n"
+        "국가법령정보센터(법제처) 조세심판원 재결례에서 자동으로 다시 찾습니다. 주제(키워드) 검색 — "
+        "nts_ruling_search의 심판·판례 검색과 nts_and_olta_precedent_search — 은 국가법령정보센터 조세심판원 "
+        "결정을 law_tax_tribunal 묶음으로 함께 돌려주니(국세청 결과와 겹치는 건 제외) 반드시 같이 검토하세요. "
+        "이 묶음은 의결일 최신순이라, 사용자가 검토 시점을 밝히지 않았으면 최신 사례를 원하는지 검토 대상 거래의 "
+        "과세기간·처분 시점 전후 사례가 필요한지 한 번 되물은 뒤 date_from/date_to로 다시 찾으세요(시점이 이미 "
+        "정해졌으면 묻지 말 것). "
+        "더 넓게(다음 쪽·본문 검색·의결일 범위) 찾을 때는 tax_tribunal_decision_search(법제처, 조세심판원 결정 "
+        "약 14만 건, 국세·지방세, 전문 포함)를 쓰세요.\n"
         "**검색 결과의 본문은 전문이 아니라 검색어 주변 스니펫입니다** — 심판·심사는 "
         "'결정내용은 붙임과 같습니다.'만 나옵니다. 결정 이유·처분개요·청구주장·사실관계가 "
         "필요하면 검색으로 문서번호를 찾은 뒤 nts_ruling_get_full_text로 전문을 읽으세요. "
@@ -244,6 +250,9 @@ def nts_ruling_search(
     Returns:
         컬렉션별 총 건수와 결과 목록(제목, 문서번호, 출처기관, 날짜, 세목, 요지, 붙임 파일 ID).
         검색 결과가 전혀 없으면 "_guidance" 키에 안내 메시지가 포함됩니다.
+        심판·판례(precedent)를 검색하면 "law_tax_tribunal"에 국가법령정보센터(법제처) 조세심판원
+        결정을 함께 줍니다 — 국세청 시스템에 없는 심판례가 있으므로 꼭 같이 보세요. 이번 국세청
+        결과에 나온 결정은 빼고 의결일 최신순으로, view_count만큼(최대 20) 줍니다.
 
     권장 흐름: 이 도구로 요지를 훑어 후보를 좁힌 뒤,
     필요한 문서만 nts_ruling_get_full_text(문서번호)로 전문을 읽습니다.
@@ -259,7 +268,7 @@ def nts_ruling_search(
                             f"(가능: {list(COLLECTIONS.keys())})"}
         collection_codes = [COLLECTIONS[c] for c in collections]
 
-    res = _cap_response(_tool_guard(
+    res = _tool_guard(
         _client.search,
         keyword=keyword,
         collections=collection_codes,
@@ -271,13 +280,19 @@ def nts_ruling_search(
         tax_type_filter=tax_type_filter,
         include_full_text=include_full_text,
         statute_types=statute_types,
-    ))
-    # 심판례를 찾는 검색(precedent 포함)이면 법제처 조세심판원 재결례도 보라고 짚어 준다 —
-    # 국세청 수록분만 보고 '없다'고 결론 내리는 일이 있었다 (2026-11-23, 조심 2020중2305)
+    )
+    # 클라이언트 캐시는 같은 dict를 돌려준다 — 여기서 키를 덧붙이거나 _cap_response가 항목을 덜어내면
+    # 캐시까지 바뀌므로 복사본에 작업한다
+    res = copy.deepcopy(res)
+    # 심판·판례를 찾는 검색이면 국가법령정보센터 조세심판원 결정도 같이 찾아 붙인다 — 국세청에는
+    # 조세심판원 결정이 다 있지 않다 (2026-11-23 실측: 주제 검색 표본 30건 중 4건이 국세청에 없음)
     searched_precedent = (collections and "precedent" in collections) or (not collections and not statute_types)
-    if searched_precedent and isinstance(res, dict) and res.get("status") not in ("INVALID_INPUT",):
-        res["_조세심판원_보충"] = _TT_SEARCH_HINT
-    return res
+    if searched_precedent and isinstance(res, dict) and res.get("status") != "INVALID_INPUT":
+        nts_items = (res.get("precedent") or {}).get("items") or []
+        res["law_tax_tribunal"] = _tt_topic_section(
+            keyword, view_count, page, date_from, date_to, tax_type_filter,
+            exclude=_tt_keys(it.get("doc_no") for it in nts_items))
+    return _cap_response(res)
 
 
 @mcp.tool()
@@ -510,6 +525,8 @@ def nts_and_olta_precedent_search(
         nts_precedent: 국세법령정보시스템의 심판·심사·판례 결과
         olta_precedent: 지방세법령정보시스템의 조세심판원·감사원·헌재·법원 결과
             (nts_precedent와 문서번호가 겹치는 항목은 제외됨)
+        law_tax_tribunal: 국가법령정보센터(법제처) 조세심판원 결정 — 국세청·지방세 시스템에 없는
+            심판례가 여기 있을 수 있습니다. 위 두 결과와 겹치는 결정은 빼고 의결일 최신순으로 줍니다
         duplicates_removed: 국세 결과와 겹쳐 제외된 지방세 항목 수
             (view_count로 자르기 전 기준 — 겹친 건수 전부를 셉니다)
     """
@@ -521,6 +538,7 @@ def nts_and_olta_precedent_search(
             tax_type_filter=tax_type_filter,
             include_full_text=False,
         )
+        nts_result = copy.deepcopy(nts_result)  # 캐시된 dict를 바꾸지 않게 (아래 olta_result도)
         nts_items = nts_result.get("precedent", {}).get("items", [])
         nts_doc_nos = {normalize_doc_no(it.get("doc_no", "")) for it in nts_items if it.get("doc_no")}
 
@@ -534,21 +552,25 @@ def nts_and_olta_precedent_search(
         # 제외 건수는 olta 클라이언트가 세어 돌려준다 — 예전에는 이 숫자 하나 때문에
         # 같은 검색을 한 번 더 돌렸다(대개 캐시에 맞았지만 TTL이 만료됐거나 빈 결과가
         # 캐시되지 않은 경우엔 실제로 두 번 요청했다)
+        olta_result = copy.deepcopy(olta_result)
         duplicates_removed = olta_result.pop("excluded_count", 0)
+
+        olta_items = [it for v in olta_result.values() if isinstance(v, dict)
+                      for it in (v.get("items") or [])]
+        tt = _tt_topic_section(keyword, view_count, 1, None, None, tax_type_filter,
+                               exclude=_tt_keys(it.get("doc_no") for it in nts_items + olta_items))
 
         nts_status = nts_result.get("status", "OK")
         olta_status = olta_result.get("status", "OK")
         return {
-            "status": "OK" if "OK" in (nts_status, olta_status) else "NOT_FOUND",
+            "status": "OK" if "OK" in (nts_status, olta_status, tt.get("status", "OK")) else "NOT_FOUND",
             "nts_precedent": nts_result.get("precedent"),
             "olta_precedent": {k: v for k, v in olta_result.items()},
+            "law_tax_tribunal": tt,
             "duplicates_removed": duplicates_removed,
         }
 
-    res = _cap_response(_tool_guard(_impl))
-    if isinstance(res, dict) and res.get("status") not in ("INVALID_INPUT",):
-        res["_조세심판원_보충"] = _TT_SEARCH_HINT
-    return res
+    return _cap_response(_tool_guard(_impl))
 
 
 @mcp.tool()
@@ -625,8 +647,72 @@ def olta_get_detail(category: str, doc_id: str) -> dict:
 # ---------------------------------------------------------------------------
 _tt = LawGoKrClient()
 TT_SOURCE = "국가법령정보센터(law.go.kr) 조세심판원 재결례"
-_TT_SEARCH_HINT = ("조세심판원 결정은 국세법령정보시스템에 다 실려 있지 않습니다 — 심판례를 찾는 중이면 "
-                   "tax_tribunal_decision_search(keyword)로 국가법령정보센터(조세심판원 결정 약 14만 건)도 확인하세요.")
+_TT_TOPIC_NOTE = ("국세법령정보시스템에 없는 조세심판원 결정이 여기 있을 수 있습니다 (2026-11 표본 실측 약 13%). "
+                  "이번 응답의 다른 결과에 이미 나온 결정만 뺐습니다(국세청의 다른 쪽에는 있을 수 있음). "
+                  "의결일 최신순이고, 전문은 nts_ruling_get_full_text(doc_no), 더 찾으려면 "
+                  "tax_tribunal_decision_search(keyword, page·search_body·date_from/date_to).")
+_TT_TOPIC_MAX = 20
+# 기간을 안 준 주제 검색에는 '검토 시점'을 사용자에게 되묻게 한다 — 세법은 개정이 잦아 최신 결정이 검토 대상
+# 거래(과세기간·처분 시점)에 맞지 않을 수 있는데, 기본 정렬은 의결일 최신순이다 (2026-11-23 사용자 제안)
+_TT_ASK_PERIOD = ("검토 시점을 아직 모르면 사용자에게 한 번 물어보세요 — 최신 사례를 원하는지, 아니면 검토 대상 "
+                  "거래의 과세기간·처분 시점 전후 사례가 필요한지. 세법 개정 전후로 결론이 달라질 수 있습니다. "
+                  "시점을 들으면 date_from/date_to(YYYYMMDD, 의결일 기준)로 다시 검색하세요. 이미 대화에서 시점이 "
+                  "정해졌으면 묻지 말고 그 시점으로 검색하세요.")
+
+
+def _tt_key(doc_no):
+    """조세심판원 청구번호의 비교 열쇠 (연도, 지역기호, 번호) — 표기('조심-2023-서-9465'/'조심 2023서9465')와
+    앞자리 0을 무시한다. 조세심판원 번호가 아니면 None."""
+    p = parse_tax_tribunal_no(doc_no)
+    return (p[1], p[2], int(p[3])) if p else None
+
+
+def _tt_keys(doc_nos) -> set:
+    return {k for k in (_tt_key(d) for d in doc_nos if d) if k}
+
+
+def _tt_topic_section(keyword, count, page=1, date_from=None, date_to=None, tax_type_filter=None,
+                      exclude=frozenset()) -> dict:
+    """주제(키워드) 검색에 붙이는 '국가법령정보센터 조세심판원 결정' 묶음. 사건명에서 먼저 찾고 0건이면
+    본문에서 찾는다. 이미 다른 원천 결과에 있는 결정(exclude)은 뺀다. 실패해도 검색 전체를 깨지 않고
+    이 묶음에 status를 단다 — 실패를 '없음'으로 읽지 않게."""
+    count = max(1, min(int(count or 5), _TT_TOPIC_MAX))
+    want = min(count + len(exclude), 100)
+    dates = (date_from or "", date_to or "")
+    try:
+        r = _tt.search_tax_tribunal(keyword, False, *dates, want, page)
+        scope = "사건명·청구번호"
+        if not r["decisions"]:
+            r = _tt.search_tax_tribunal(keyword, True, *dates, want, page)
+            scope = "본문 (사건명 0건이라 넓힘)"
+    except LawGoKrAuthError:
+        return {"status": "SKIPPED", "_guidance": (
+            "법제처 기관코드(LAW_API_OC) 미설정·인증 실패로 국가법령정보센터 조세심판원 결정은 확인하지 못했습니다 — "
+            "국세청 결과만으로 심판례가 없다고 단정하지 마세요.")}
+    except (LawGoKrError, LawGoKrUpstreamError, requests.exceptions.RequestException) as e:
+        logger.warning("조세심판원 재결례 주제 검색 실패: %s", mask_oc(e))
+        return {"status": "UPSTREAM_ERROR", "오류": mask_oc(f"{type(e).__name__}: {e}"), "_guidance": (
+            "국가법령정보센터 조세심판원 결정 검색에 실패했습니다 — 국세청 결과만으로 심판례가 없다고 단정하지 마세요.")}
+    items, dup = [], 0
+    for row in r["decisions"]:
+        if _tt_key(row["청구번호"]) in exclude:
+            dup += 1
+            continue
+        if len(items) < count:
+            items.append({"doc_no": row["청구번호"], "title": row["사건명"], "date": row["의결일자"],
+                          "serial": row["일련번호"]})
+    sec = {"name_kr": "조세심판원 결정 — 국가법령정보센터(법제처)", "total_count": r["total"],
+           "검색범위": scope, "정렬": "의결일 최신순", "items": items}
+    if dup:
+        sec["다른_결과와_겹쳐_제외"] = dup
+    if tax_type_filter:
+        sec["주의"] = f"세목 필터('{tax_type_filter}')는 이 묶음에 적용되지 않습니다 — 목록에 세목이 없어서입니다."
+    if not items:
+        sec["status"] = "NOT_FOUND"
+    sec["안내"] = _TT_TOPIC_NOTE
+    if not (date_from or date_to):
+        sec["검토시점_확인"] = _TT_ASK_PERIOD
+    return sec
 
 
 def _is_tt_no(doc_no) -> bool:

@@ -10,7 +10,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![MCP](https://img.shields.io/badge/MCP-streamable--http-black)
 ![tools](https://img.shields.io/badge/tools-21-brightgreen)
-![status](https://img.shields.io/badge/version-v5.10.0-informational)
+![status](https://img.shields.io/badge/version-v5.11.0-informational)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
 ```bash
@@ -51,14 +51,14 @@ python server_ext.py          # http://0.0.0.0:8000/mcp (포트는 PORT 환경�
 
 | 도구 | 용도 |
 |---|---|
-| `nts_ruling_search` | 국세 통합검색 (세목명이 정확하면 서버측 세목필터 자동 적용) — 기본통칙·집행기준도 여기서 (`statute_types`, v5.9) |
+| `nts_ruling_search` | 국세 통합검색 (세목명이 정확하면 서버측 세목필터 자동 적용) — 기본통칙·집행기준도 여기서 (`statute_types`, v5.9). 심판·판례를 찾으면 국가법령정보센터 조세심판원 결정도 함께 (`law_tax_tribunal`, v5.11) |
 | `nts_ruling_get_by_doc_no` | 국세 문서 사건번호로 직접 조회 (요지·스니펫). 조세심판원 결정(조심·국심)이 국세청에 없으면 국가법령정보센터에서 다시 찾음 (v5.10) |
 | `nts_ruling_get_full_text` | **결정문·판결문 전문 조회** — 붙임 HWP를 받아 본문 텍스트로 반환 (v5.5). 조세심판원 결정이 국세청에 없거나 붙임이 없으면 국가법령정보센터 전문으로 대신 (v5.10) |
 | `nts_enforcement_standard` | **집행기준 본문** — 번호로 한 건 전문, 조문 단위 목록. 국세청 전자도서관의 세목별 집행기준 책자(PDF)를 서버가 받아 쪼개 둔 것 (v5.9) |
 | `olta_ruling_search` | 지방세 통합검색 (전체 카테고리 미리보기, 카테고리당 3건) |
 | `olta_collection_search` | 지방세 특정 카테고리 깊은 탐색 — 페이지네이션·기간·최신순 정렬 (서버측) |
 | `olta_get_detail` | 지방세 문서 본문 전문 조회 (조세심판원·헌재 지원) |
-| `nts_and_olta_precedent_search` | 국세+지방세 조세심판원 계열을 한 번에, 중복 제거해서 검색 |
+| `nts_and_olta_precedent_search` | 국세+지방세 조세심판원 계열을 한 번에, 중복 제거해서 검색 — 국가법령정보센터 조세심판원 결정도 함께 (`law_tax_tribunal`, v5.11) |
 | `verify_citations` | 인용된 문서번호(국세·지방세) 실존 여부 일괄 검증 — 인용 환각 방지 (v5.4). 조세심판원 결정은 국가법령정보센터도 확인 (v5.10) |
 
 ### 확장 12개 (법제처 law.go.kr, `server_ext.py`에서만 추가)
@@ -320,6 +320,15 @@ nts-tax-mcp/
 | `sort` | `relevance`(정확도순, 기본) / `date_desc`(최신순) / `date_asc`(오래된순) |
 | `tax_type_filter` | 세목명에 이 문자열이 포함된 것만 남김 (예: "양도소득세") |
 | `include_full_text` | **기본 `false`** (v5.5에서 뒤집음). `true`로 줘도 얻는 건 전문이 아니라 검색어 주변 500~900자 스니펫이다 — 전문은 `nts_ruling_get_full_text`로 조회 |
+
+심판·판례(`precedent`)를 검색하면(컬렉션 생략 포함) 응답에 **`law_tax_tribunal`** 묶음이 붙습니다 (v5.11).
+국가법령정보센터(법제처) 조세심판원 결정을 같은 검색어로 찾은 것입니다. 사건명에서 먼저 찾고, 0건이면 본문에서
+찾습니다. 의결일 최신순으로 `view_count`건(최대 20)을 주고, `page`·`date_from`/`date_to`도 같이 적용됩니다.
+이번 국세청 결과에 이미 나온 결정은 빼고 `다른_결과와_겹쳐_제외`에 그 수를 적습니다. 법제처 검색이 실패하면 묶음의
+`status`가 `UPSTREAM_ERROR`(인증 미설정이면 `SKIPPED`)가 되고, 국세청 결과는 그대로 나갑니다.
+기간을 주지 않은 검색이면 묶음에 `검토시점_확인`이 붙습니다. 최신 사례를 원하는지, 검토 대상 거래의 과세기간·처분 시점
+전후 사례가 필요한지 사용자에게 한 번 물어본 뒤 `date_from`/`date_to`로 다시 찾으라는 안내입니다. 세법은 개정 전후로
+결론이 달라질 수 있기 때문입니다. 시점이 이미 정해진 대화라면 묻지 않습니다.
 
 ### `nts_ruling_get_by_doc_no`
 
@@ -628,8 +637,11 @@ v5.8부터 `원문` 앞에 섞이던 조문번호·시행일자·`000000`·`N` �
 - **법제처(law.go.kr) 도구 12개는 `server_ext.py`로 실행했을 때만 사용 가능**합니다.
   `server.py`만 단독 실행하면 기본 9개만 노출됩니다.
 - **조세심판원 결정은 국세법령정보시스템에 다 있지 않습니다** (실측: 조심 2020중2305는 국세청 문서번호 조회·검색 모두 0건,
-  국가법령정보센터에는 전문 있음). 문서번호 조회·전문·인용 검증은 조심·국심 번호를 법제처에서 자동으로 다시 찾고,
-  키워드 검색 결과에는 `_조세심판원_보충` 안내가 붙습니다 (v5.10). 이 보충 조회도 `LAW_API_OC`가 있어야 동작합니다.
+  국가법령정보센터에는 전문 있음 — 주제 검색 표본으로는 약 13%가 국세청에 없음). 문서번호 조회·전문·인용 검증은
+  조심·국심 번호를 법제처에서 자동으로 다시 찾고(v5.10), 주제 검색(`nts_ruling_search`의 심판·판례,
+  `nts_and_olta_precedent_search`)은 법제처 조세심판원 결정을 `law_tax_tribunal` 묶음으로 함께 돌려줍니다(v5.11).
+  이 묶음은 의결일 최신순이고, 이번 응답에 이미 나온 결정만 뺍니다. 세목 필터는 적용되지 않습니다(목록에 세목이 없음).
+  이 보충 조회도 `LAW_API_OC`가 있어야 동작하며, 없으면 묶음에 `SKIPPED`로 표시됩니다.
 - **law.go.kr IP 화이트리스트**: 등록되지 않은 IP에서 호출하면 법제처 도구 전체가
   "인증 실패"(`status: AUTH_ERROR`)를 반환합니다. `open.law.go.kr` → OpenAPI
   신청내역에서 서버의 공인 IP를 먼저 등록해야 합니다.
@@ -667,7 +679,8 @@ v5.8부터 `원문` 앞에 섞이던 조문번호·시행일자·`000000`·`N` �
 ## 변경 이력
 
 버전별 상세 변경 내용은 [CHANGELOG.md](CHANGELOG.md)를 참고하세요.
-최신은 **v5.10** (2026-11-23) — 조세심판원 결정 보충 조회(국가법령정보센터, `tax_tribunal_decision_search`) · 만료 인증서 대비.
+최신은 **v5.11** (2026-11-23) — 주제 검색에도 국가법령정보센터 조세심판원 결정을 함께 (`law_tax_tribunal`).
+그 전 **v5.10** (2026-11-23) — 조세심판원 결정 보충 조회(국가법령정보센터, `tax_tribunal_decision_search`) · 만료 인증서 대비.
 그 전 **v5.9.1** (2026-11-23) — 운영 보강: 로그 회전·시각 기록 · 없는 도구 이름 안내 · 점검 스크립트 인코딩.
 **v5.9** (2026-10-18) — 집행기준 본문(책자 보관소·`nts_enforcement_standard`) · 기본통칙·집행기준 찾기(`statute_types`).
 
