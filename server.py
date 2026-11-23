@@ -680,7 +680,6 @@ def _verify_one_citation(raw: str, search_local_tax: bool) -> dict:
         return entry
 
     candidates = []
-    sources = []
     local_first = bool(_LOCAL_TAX_DOC_RE.match(norm))
     try:
         if not local_first:

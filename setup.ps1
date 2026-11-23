@@ -70,7 +70,9 @@ try {
   if ($code -ge 400) { Write-Host "서버 기동 확인 (HTTP $code — 정상)" -ForegroundColor Green }
   else {
     Write-Host "서버 응답 없음 — 로그 확인:" -ForegroundColor Red
-    if (Test-Path "$PSScriptRoot\server.log") { Get-Content "$PSScriptRoot\server.log" -Tail 5 }
+    foreach ($f in @("logs\console.log", "logs\server.log")) {
+      if (Test-Path "$PSScriptRoot\$f") { Write-Host "--- $f"; Get-Content "$PSScriptRoot\$f" -Tail 5 -Encoding UTF8 }
+    }
   }
 }
 Write-Host ""

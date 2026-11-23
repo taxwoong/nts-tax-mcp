@@ -9,7 +9,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![MCP](https://img.shields.io/badge/MCP-streamable--http-black)
 ![tools](https://img.shields.io/badge/tools-20-brightgreen)
-![status](https://img.shields.io/badge/version-v5.9.0-informational)
+![status](https://img.shields.io/badge/version-v5.9.1-informational)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
 ```bash
@@ -133,6 +133,7 @@ PORT=8765 python server_ext.py
 | `NTS_ENFORCEMENT_REFRESH_DAYS` | 30 | 집행기준 책자 최신판 확인 주기(일). 판이 바뀐 책만 다시 받음. `0`이면 자동 확인 끔 (v5.9) |
 | `NTS_ENFORCEMENT_PATH` | `data/enforcement.json` | 집행기준 보관소 파일 위치 (v5.9) |
 | `LOG_LEVEL` | INFO | 로깅 레벨 (DEBUG로 두면 세션 재접속/캐시 히트 등이 상세히 찍힘) |
+| `NTS_LOG_DIR` | `logs/` | `server_ext.py` 로그 폴더. `server.log`를 자정마다 돌려 30일치 보관 (UTF-8, 줄마다 시각) (v5.9.1) |
 | `LAW_API_OC` | 없음 (필수) | `server_ext.py` 전용. law.go.kr 가입 시 발급받는 기관코드 — 미설정시 법제처 11개 도구가 `AUTH_ERROR`를 반환. 이 코드로 등록된 IP에서만 동작 (`open.law.go.kr` → OpenAPI 신청내역에서 서버 공인 IP 사전 등록 필요). 개인 식별정보이므로 소스에 직접 적지 말고 배포 환경에서 주입할 것 |
 
 ## 상시 운영
@@ -150,7 +151,7 @@ Railway 크레딧 소진으로 서버가 다운된 뒤(2026-08-08), 자체 서�
    .\setup.ps1
    ```
 2. `run_server.bat`이 `PORT=8734`를 설정하고 `server_ext.py`를 실행합니다 (로그:
-   `server.log`). `LAW_API_OC`는 이 파일에 직접 적지 않고, `.gitignore`된 로컬 파일
+   `logs/server.log` — 자정마다 회전해 30일치 보관, 기동 전 경고·비정상 종료는 `logs/console.log`). `LAW_API_OC`는 이 파일에 직접 적지 않고, `.gitignore`된 로컬 파일
    (`local_env.bat` — `set LAW_API_OC=본인_기관코드` 한 줄)에서 불러옵니다. 이 파일이
    없으면 법제처 11개 도구만 동작하지 않고 기본 9개는 정상입니다.
 3. [Tailscale](https://tailscale.com)을 설치해 로그인 후 Funnel로 외부에 고정 주소로 노출합니다.
@@ -188,7 +189,7 @@ python auth_gate.py revoke 홍길동   # 그 사람 URL만 무효화 (서버 재
 | 값 | 동작 |
 |---|---|
 | `off` | 게이트 없음 (종전과 동일). **토큰을 아직 발급하지 않았으면 자동으로 이 값** |
-| `warn` | 차단하지 않고 토큰 없는 요청만 `server.log`에 기록 — 전환 기간용 |
+| `warn` | 차단하지 않고 토큰 없는 요청만 `logs/server.log`에 기록 — 전환 기간용 |
 | `enforce` | 토큰 없는 요청은 401. **토큰 파일이 있으면 기본값** |
 
 전환은 `warn`으로 며칠 돌려 누가 쓰는지 로그로 확인한 뒤 `enforce`로 넘기는 순서를 권합니다.
@@ -230,17 +231,12 @@ Claude 채팅에서 도구가 안 잡히는 문제가 생겼을 때, **서버 �
 보내서 initialize → tools/list → tools/call까지 전체 흐름을 검증합니다.
 
 ```bash
-python test_mcp_client.py
+python test_mcp_client.py                                    # 기본: 서버컴퓨터 로컬 http://127.0.0.1:8734/mcp
+python test_mcp_client.py --url https://<서버-tailnet-주소>/mcp  # 외부 주소(Funnel)까지 확인
 ```
 
-스크립트 기본값은 예전 Railway 서버 주소(`https://web-production-10fe2.up.railway.app/mcp`)로
-남아 있는데, **Railway는 크레딧 소진으로 더 이상 운영되지 않습니다**. 현재 운영
-중인 서버를 점검하려면 반드시 `--url`로 실제 주소를 지정하세요.
-
-```bash
-python test_mcp_client.py --url https://<서버-tailnet-주소>/mcp
-python test_mcp_client.py --url http://127.0.0.1:8734/mcp
-```
+서버컴퓨터의 기본 콘솔(cp949)에서 그대로 실행해도 됩니다 (v5.9.1부터 출력을 UTF-8로 맞춤).
+서버가 안 뜨면 `logs/console.log`(기동 실패·트레이스백)와 `logs/server.log` 마지막 줄을 보세요.
 
 **이 스크립트가 전부 성공하는데 Claude 채팅에서는 도구가 안 보인다면**, 원인은 서버가 아니라
 Claude 쪽 커넥터 인식/캐싱 문제입니다. 이 경우 아래를 시도해 보세요.
@@ -287,12 +283,14 @@ nts-tax-mcp/
 ├── tests/                       # 파서 회귀 테스트 (v5.4)
 │   ├── refresh_fixtures.py      #   실제 응답을 픽스처로 캡처 (OC 키 자동 마스킹)
 │   ├── test_parsers.py          #   오프라인 파싱 검증 (네트워크 불필요, pytest 호환)
+│   ├── test_*.py                #   기능별 오프라인 테스트 (각 파일 단독 실행 또는 pytest)
 │   ├── compare_with_site.py     #   라이브 드리프트 감지 (사이트 개편 조기 경보)
 │   └── fixtures/                #   캡처된 응답 (*.gz) + manifest.json
 ├── client/                      # MCP 커넥터 우회 독립 클라이언트 (CLI 포함)
 │   ├── nts_client.py
 │   ├── nts_search.py
 │   └── README.md
+├── logs/                        # 운영 로그 (커밋 안 함) — server.log(자정 회전·30일), console.log (v5.9.1)
 ├── requirements.txt
 ├── LICENSE                      # MIT
 ├── CHANGELOG.md                 # 버전별 변경 이력 (v2 ~ v5.9)
@@ -645,7 +643,8 @@ v5.8부터 `원문` 앞에 섞이던 조문번호·시행일자·`000000`·`N` �
 ## 변경 이력
 
 버전별 상세 변경 내용은 [CHANGELOG.md](CHANGELOG.md)를 참고하세요.
-최신은 **v5.9** (2026-10-18) — 집행기준 본문(책자 보관소·`nts_enforcement_standard`) · 기본통칙·집행기준 찾기(`statute_types`).
+최신은 **v5.9.1** (2026-11-23) — 운영 보강: 로그 회전·시각 기록 · 없는 도구 이름 안내 · 점검 스크립트 인코딩.
+그 전 **v5.9** (2026-10-18) — 집행기준 본문(책자 보관소·`nts_enforcement_standard`) · 기본통칙·집행기준 찾기(`statute_types`).
 
 세부 데이터 사양·코드표(세목 코드, 카테고리 코드 등)는 [DATA_SOURCES.md](DATA_SOURCES.md)에 있습니다.
 

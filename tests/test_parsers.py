@@ -343,7 +343,7 @@ def test_pick_effective_version_backtracks_on_staged_enforcement():
 
 def test_law_date_format_validation():
     """잘못된 날짜 형식은 NOT_FOUND(부존재)가 아니라 INVALID_INPUT 계열이어야 한다."""
-    from law_go_kr import LawGoKrClient, LawGoKrError, LawGoKrNotFound
+    from law_go_kr import LawGoKrError, LawGoKrNotFound
     m = manifest()["law"]
     with _fixture_law_client() as client:
         for bad in ("2025-03-15", "", "20250101x", "2025"):

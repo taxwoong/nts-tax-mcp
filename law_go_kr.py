@@ -761,7 +761,7 @@ class LawGoKrClient:
                     raise LawGoKrError(
                         (f"법령ID {law_id}인 현행 법령이 '{law_name}' 검색 결과에 없음" if law_id else
                          f"'{law_name}'과(와) 이름이 정확히 같은 현행 법령이 검색 결과에 없음")
-                        + f" — 정확한 법령명(약칭 불가)으로 다시 조회하세요 (검색된 법령: "
+                        + " — 정확한 법령명(약칭 불가)으로 다시 조회하세요 (검색된 법령: "
                         + ", ".join(names[:10]) + (" 등" if len(names) > 10 else "") + ")")
                 chosen = rows[0]
                 # 현행 검색 결과의 시행일자도 연혁 행의 시행일자다 (2026-10-09 실측: 소득세법 현행

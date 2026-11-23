@@ -10,5 +10,8 @@ rem   set NTS_PUBLIC_BASE=https://<서버주소>
 cd /d %~dp0
 set PORT=8734
 if exist local_env.bat call local_env.bat
-if "%LAW_API_OC%"=="" echo [경고] LAW_API_OC 미설정 — local_env.bat을 만들어 기관코드를 지정하세요. law.go.kr 도구 8개는 인증 실패로 동작하지 않습니다. >> server.log
-.venv\Scripts\python.exe server_ext.py >> server.log 2>&1
+if not exist logs mkdir logs
+if "%LAW_API_OC%"=="" echo [경고] LAW_API_OC 미설정 — local_env.bat을 만들어 기관코드를 지정하세요. law.go.kr 도구 8개는 인증 실패로 동작하지 않습니다. >> logs\console.log
+rem 서버 로그는 server_ext.py가 logs\server.log에 직접 쓴다 (자정마다 회전, 30일 보관, UTF-8).
+rem 아래 리다이렉트(logs\console.log)는 로그 설정 전 경고와 비정상 종료 트레이스백만 받는다.
+.venv\Scripts\python.exe server_ext.py >> logs\console.log 2>&1

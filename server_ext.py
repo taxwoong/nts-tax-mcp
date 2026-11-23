@@ -7,8 +7,11 @@ server_ext.py — nts-tax-mcp 확장 진입점
 실행: PORT=8734 LAW_API_OC=<발급받은 기관코드> python server_ext.py
 (run_server.bat이 이 파일을 실행한다. server.py는 수정하지 않는다.)
 """
+import difflib
 import logging
-from typing import Optional
+import logging.handlers
+import os
+from pathlib import Path
 
 import requests
 
@@ -21,6 +24,90 @@ _law = LawGoKrClient()
 # server.py가 import 시점에 logging.basicConfig를 했으므로 루트 핸들러가 있다 — 그 핸들러들에 기관코드(OC)
 # 가림 필터를 단다 (트레이스백까지 가린다. law_go_kr._get도 예외 문자열을 가려서 올린다)
 install_oc_log_mask()
+
+
+# ── 로그 설정 ──────────────────────────────────────────────────────────────────
+# 예전에는 run_server.bat이 stdout/stderr를 server.log에 이어 붙이기만 해서 파일이 끝없이 커지고
+# (2026-11-23 30MB), 대부분 줄에 시각이 없었으며, nts/olta 모듈 로그는 자기 핸들러+루트 핸들러로
+# 두 번씩 찍혔다. 이제 서버가 직접 logs/server.log에 쓰고 자정마다 돌려 30일치만 남긴다.
+# bat의 리다이렉트(logs/console.log)는 로그 설정 전 경고·비정상 종료 트레이스백만 받는다 —
+# 같은 파일을 bat이 열고 있으면 Windows에서 이름 바꾸기(회전)가 실패하므로 파일을 분리했다.
+LOG_DIR = Path(os.environ.get("NTS_LOG_DIR") or Path(__file__).resolve().parent / "logs")
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+LOG_BACKUP_DAYS = 30
+
+
+def configure_logging(log_dir: Path = None, level: str = None) -> Path:
+    """루트 로거를 '날짜별로 회전하는 UTF-8 파일 하나'로 정리한다. 로그 파일 경로를 돌려준다."""
+    log_dir = Path(log_dir or LOG_DIR)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    path = log_dir / "server.log"
+    handler = logging.handlers.TimedRotatingFileHandler(
+        path, when="midnight", backupCount=LOG_BACKUP_DAYS, encoding="utf-8")
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        root.removeHandler(h)
+        h.close()
+    root.addHandler(handler)
+    root.setLevel(level or os.environ.get("LOG_LEVEL", "INFO"))
+    # 국세·지방세 모듈은 단독 실행용으로 자기 StreamHandler를 달고 있다 — 서버에서는 떼고 루트로만 보낸다
+    for name in ("nts_tax_ruling_search", "olta_tax_ruling_search"):
+        lg = logging.getLogger(name)
+        for h in list(lg.handlers):
+            lg.removeHandler(h)
+        lg.propagate = True
+    # uvicorn 로거도 자기 핸들러 없이 루트로 (uvicorn.run(log_config=None)과 짝)
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        lg = logging.getLogger(name)
+        for h in list(lg.handlers):
+            lg.removeHandler(h)
+        lg.propagate = True
+    install_oc_log_mask()  # 새 핸들러에도 기관코드 가림 필터
+    return path
+
+
+# ── 없는 도구 이름 안내 ─────────────────────────────────────────────────────────
+# 클라이언트 AI가 도구 이름을 짐작해서 부르는 일이 있다 (2026-11 로그: olta_ruling_get_full_text·
+# olta_ruling_detail·olta_ruling_get, 다른 커넥터의 노무 도구 이름, 'list'). FastMCP 기본 오류는
+# 'Unknown tool: X'뿐이라 다시 짐작하게 되므로, 맞는 도구를 짚어 준다.
+def unknown_tool_message(name: str, known: list) -> str:
+    low = (name or "").strip().lower()
+    hints = []
+    if low.startswith("olta_") and any(k in low for k in ("detail", "full", "text", "get", "body")):
+        hints.append("지방세 문서 본문은 olta_get_detail(category, doc_id)로 봅니다 — olta에는 *_get_full_text 도구가 없습니다")
+    elif low.lstrip("-/") in ("list", "tools", "list_tools", "help"):
+        hints.append("도구 목록은 도구 호출이 아니라 MCP tools/list 요청으로 받습니다")
+    elif low.startswith(("labor_", "moel_", "nlrc_", "comwel_", "calc_", "check_minimum", "social_insurance")):
+        hints.append("이 서버는 국세·지방세·법제처 세법 도구만 있습니다 — 노동법·4대보험 도구는 다른 커넥터에 있습니다")
+    prefix = low.split("_", 1)[0] + "_" if "_" in low else ""
+    pool = [k for k in known if prefix and k.startswith(prefix)] or list(known)
+    similar = difflib.get_close_matches(low, pool, n=3, cutoff=0.45)
+    msg = f"Unknown tool: {name} — 이 서버에 없는 도구입니다."
+    if hints:
+        msg += " " + " / ".join(hints) + "."
+    if similar:
+        msg += " 비슷한 이름: " + ", ".join(similar) + "."
+    msg += " 전체 도구: " + ", ".join(sorted(known))
+    return msg
+
+
+def install_unknown_tool_hint(server=None) -> None:
+    """FastMCP 도구 관리자의 call_tool을 감싸 없는 도구일 때 안내가 붙은 오류를 낸다."""
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    tm = (server or mcp)._tool_manager
+    if getattr(tm.call_tool, "_with_hint", False):
+        return
+    original = tm.call_tool
+
+    async def call_tool(name, arguments, context=None, convert_result=False):
+        if tm.get_tool(name) is None:
+            raise ToolError(unknown_tool_message(name, [t.name for t in tm.list_tools()]))
+        return await original(name, arguments, context=context, convert_result=convert_result)
+
+    call_tool._with_hint = True
+    tm.call_tool = call_tool
 
 # status 계약 (server.py와 동일한 규칙):
 #   OK          정상 — 결과 있음
@@ -355,7 +442,9 @@ if __name__ == "__main__":
     from auth_gate import TokenGate, describe
     from server import start_enforcement_refresh
 
-    logger.info("nts-tax-mcp 확장판 기동 — 기존 9개 + 법제처 11개 도구")
+    log_path = configure_logging()
+    install_unknown_tool_hint()
+    logger.info("nts-tax-mcp 확장판 기동 — 기존 9개 + 법제처 11개 도구 (로그: %s)", log_path)
     start_enforcement_refresh()
 
     # mcp.run() 대신 앱을 직접 만들어 접근 토큰 게이트를 한 겹 두른다.
@@ -370,4 +459,5 @@ if __name__ == "__main__":
         host=mcp.settings.host,
         port=mcp.settings.port,
         log_level=mcp.settings.log_level.lower(),
+        log_config=None,  # uvicorn이 자기 콘솔 핸들러를 달지 않게 — configure_logging의 파일 하나로 모은다
     )

@@ -25,6 +25,13 @@ import sys
 
 import requests
 
+# 서버 컴퓨터의 기본 콘솔은 cp949라 '—' 같은 문자를 찍다가 UnicodeEncodeError로 멈췄다 (2026-11-23)
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 HEADERS = {
     "Content-Type": "application/json",
     "Accept": "application/json, text/event-stream",
