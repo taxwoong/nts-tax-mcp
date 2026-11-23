@@ -216,7 +216,7 @@ NTST_FLE_ID (검색 응답에 이미 포함)
   사전 등록해야 하며, 미등록 IP는 응답 앞부분에 "인증"+"실패" 문자열이 포함되어
   클라이언트가 이를 감지해 명시적 오류로 변환한다 (`LawGoKrError`).
 
-### `target`별 MCP 도구 매핑 (7개)
+### `target`별 MCP 도구 매핑 (8개)
 
 | `target` | 내용 | 대응 MCP 도구 |
 |---|---|---|
@@ -227,6 +227,7 @@ NTST_FLE_ID (검색 응답에 이미 포함)
 | `admrul` | 행정규칙 (훈령·예규·고시 — **기본통칙·집행기준은 없음**: '기본통칙'·'통칙'·'법인세법 기본통칙' 검색 0건, 2026-10-18) | `admin_rule_search` |
 | `trty` | 조약 (조세조약 포함) | `treaty_search` |
 | `ordin` | 자치법규 (조례·규칙) | `ordinance_search` |
+| `ttSpecialDecc` | 조세심판원 특별행정심판재결례 — 조세심판원·옛 국세심판원(국심) 결정 141,627건(2026-11-23), 국세·지방세(조심YYYY지) 함께, 최신 의결분이 열흘 안쪽에 반영. **국세법령정보시스템에 없는 심판례가 있다**(조심 2020중2305). 검색은 `search=1` 사건명(청구번호 포함)·`2` 본문, `sort=ddes` 최신순, 의결일 범위 `rslYd`. 청구번호 검색어는 붙여 써야 걸림('2020중2305' O, '2020-중-2305' X) (v5.10) | `tax_tribunal_decision_search`, `nts_ruling_get_by_doc_no`·`nts_ruling_get_full_text`·`verify_citations` 보충 조회 |
 
 ### 항목별 주요 반환 필드
 
@@ -238,6 +239,7 @@ NTST_FLE_ID (검색 응답에 이미 포함)
 | 법령 부칙(시행본 통합본 내 `<부칙단위>`) | 공포일자, 공포번호, 시행일 요약 (헤더 `<조문시행일자문자열>` = 그 MST 공포 당시의 조문별 시행일) | 부칙 전문 (시행일·적용례·경과조치), 조문 언급 항 발췌 |
 | 행정규칙(`admrul`) | 일련번호, 행정규칙명, 종류, 소관부처, 발령일자, 발령번호, 시행일자 | 본문 전체(길이 포함) |
 | 조약(`trty`) | 조약일련번호, 조약명, 조약구분, 서명일자, 발효일자 | 본문 전체(길이 포함) |
+| 조세심판원 재결례(`ttSpecialDecc`) | 특별행정심판재결례일련번호, 사건명, 청구번호(예: '조심 2020중2305'), 의결일자(YYYY.MM.DD), 재결청, 재결구분명('조세'), 데이터기준일시 | 사건명, 의결일자(YYYYMMDD), 세목, 재결요지, 따른결정, 참조결정, 주문, 청구취지, 이유(처분개요·청구주장·처분청의견·심리및판단), 관련법령 — **본문 응답의 청구번호·사건번호는 빈칸**이라 목록 행의 청구번호를 덧붙인다 |
 | 자치법규(`ordin`) | 일련번호(=MST), 자치법규ID, 자치법규명, 지자체, 공포일자, 시행일자, 제개정구분 | 본문(조문+부칙, 길이 포함, `max_chars`/`start_char`로 이어 읽기). **본문은 `lawService target=ordin&MST=<일련번호>`** — `ID=`는 자치법규ID라 다른 번호 체계 (v5.8) |
 
 ### 도구별 구현 특이사항 (실측)
@@ -343,21 +345,21 @@ NTS/OLTA의 법원판례와 **별도 DB**라 문서번호 체계도 다르고 �
 
 ---
 
-## 5. MCP 서버 노출 도구 요약 (현재 v5.9, `server_ext.py` 기준 20개)
+## 5. MCP 서버 노출 도구 요약 (현재 v5.10, `server_ext.py` 기준 21개)
 
 ### 기본 9개 (`server.py`)
 
 | 도구 | 소스 | 주요 파라미터 |
 |---|---|---|
 | `nts_ruling_search` | NTS | keyword, collections, page, view_count(기본 5), date_from/to(클라단), sort, tax_type_filter, include_full_text(기본 false), statute_types(서버측 `mainIdCtl`, v5.9) |
-| `nts_ruling_get_by_doc_no` | NTS | doc_no — 요지·스니펫만 |
-| `nts_ruling_get_full_text` | NTS | doc_no, max_chars, start_char — 붙임 HWP 전문 (v5.5) |
+| `nts_ruling_get_by_doc_no` | NTS (+ law.go.kr ttSpecialDecc) | doc_no — 요지·스니펫만. 조심·국심 번호가 NTS에 없으면 법제처 재결례로 (v5.10) |
+| `nts_ruling_get_full_text` | NTS (+ law.go.kr ttSpecialDecc) | doc_no, max_chars, start_char — 붙임 HWP 전문 (v5.5). 조심·국심이 NTS에 없거나 붙임이 없으면 법제처 재결례 전문 (v5.10) |
 | `nts_enforcement_standard` | NTS 전자도서관 책자(로컬 보관) | law_name, number(전체 번호=전문 / 앞부분=목록 / 생략=조문별 건수), max_items (v5.9) |
 | `olta_ruling_search` | OLTA | keyword, categories, view_count(최대 3 실효), tax_type_filter |
 | `olta_collection_search` | OLTA | keyword, category, page, view_count, date_from/to(서버단), sort |
 | `olta_get_detail` | OLTA | category, doc_id |
 | `nts_and_olta_precedent_search` | 둘 다 | keyword, view_count, tax_type_filter |
-| `verify_citations` | 둘 다 | doc_nos(최대 10), search_local_tax — 문서번호 실존 일괄 검증 (v5.4) |
+| `verify_citations` | NTS·OLTA·law.go.kr | doc_nos(최대 10), search_local_tax — 문서번호 실존 일괄 검증 (v5.4). 조심·국심은 NTS 다음에 법제처 재결례 확인 (v5.10) |
 
 `verify_citations` 매칭 규칙: 정규화(공백·하이픈 제거) 후 ① 완전일치 → ② **접미 일치**
 (6자 이상·숫자 포함). 접미로 한정하는 이유는 실무 축약이 앞쪽 기관명을 생략하는 형태
@@ -366,12 +368,13 @@ NTS/OLTA의 법원판례와 **별도 DB**라 문서번호 체계도 다르고 �
 "재산세제과73"이 "…재산세제과732"에 걸리는 숫자 경계 문제. `nts_ruling_get_by_doc_no`도
 같은 정규화 기준으로 비교한다(v5.4 — 이전에는 원문 완전일치라 표기 변형이 부존재로 나갔음).
 
-### 확장 10개 (`server_ext.py`에서만, law.go.kr)
+### 확장 12개 (`server_ext.py`에서만, law.go.kr)
 
 | 도구 | target | 주요 파라미터 |
 |---|---|---|
 | `court_case_search` | prec | keyword, court, date_from/to, display, page |
 | `court_case_detail` | prec | case_serial, max_chars |
+| `tax_tribunal_decision_search` | ttSpecialDecc | keyword(search_body=False 사건명·청구번호 / True 본문), doc_no, serial, date_from/to(`rslYd`), display, page, max_chars, start_char — 의결일 최신순(`sort=ddes`) (v5.10) |
 | `law_interpretation_search` | expc | keyword, display, serial |
 | `law_history_search` | law/eflaw | law_name, law_id, current_only |
 | `law_article_as_of` | eflaw(목록)→eflaw(통합본) | law_name, article_no, as_of_date(생략 시 오늘, v5.7.3), law_id |

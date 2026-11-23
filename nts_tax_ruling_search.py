@@ -32,7 +32,7 @@ import requests
 
 # 문서번호 정규화는 두 시스템 공통 규칙 — 한 곳에서만 정의한다
 # (olta 모듈은 이 모듈을 import하지 않으므로 순환 없음)
-from olta_tax_ruling_search import normalize_doc_no
+from olta_tax_ruling_search import new_session, normalize_doc_no
 
 logger = logging.getLogger("nts_tax_ruling_search")
 if not logger.handlers:
@@ -266,7 +266,7 @@ class NtsTaxLawClient:
         cache_ttl: int = DEFAULT_CACHE_TTL,
         min_request_interval: float = DEFAULT_MIN_INTERVAL,
     ):
-        self.session = requests.Session()
+        self.session = new_session()
         self.session.headers.update({"User-Agent": USER_AGENT})
         self.verify_ssl = verify_ssl
         self.timeout = timeout
@@ -280,7 +280,7 @@ class NtsTaxLawClient:
 
     def _bootstrap(self, force: bool = False):
         if force:
-            self.session = requests.Session()
+            self.session = new_session()
             self.session.headers.update({"User-Agent": USER_AGENT})
             self._bootstrapped = False
 

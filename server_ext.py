@@ -2,7 +2,7 @@
 """
 server_ext.py — nts-tax-mcp 확장 진입점
 기존 server.py의 도구 9개(국세 NTS + 붙임 전문 + 집행기준 + 지방세 olta + 인용검증)를 그대로 물려받고,
-법제처 law.go.kr Open API 도구 11개를 추가한다. 커넥터 하나로 통합 운영.
+법제처 law.go.kr Open API 도구 12개를 추가한다. 커넥터 하나로 통합 운영.
 
 실행: PORT=8734 LAW_API_OC=<발급받은 기관코드> python server_ext.py
 (run_server.bat이 이 파일을 실행한다. server.py는 수정하지 않는다.)
@@ -205,6 +205,41 @@ def court_case_detail(case_serial: str, max_chars: int = 8000, start_char: int =
         start_char: 판례내용 시작 오프셋 — 잘린 뒷부분을 이어 읽을 때
     """
     return _safe(_law.get_case, case_serial, max_chars, start_char)
+
+
+@mcp.tool()
+def tax_tribunal_decision_search(keyword: str = "", doc_no: str = "", serial: str = "",
+                                 search_body: bool = False, date_from: str = "", date_to: str = "",
+                                 display: int = 20, page: int = 1,
+                                 max_chars: int = 30000, start_char: int = 0) -> dict:
+    """조세심판원 결정(심판례) 검색·전문 — 국가법령정보센터(법제처) 조세심판원 재결례 약 14만 건.
+
+    국세법령정보시스템(nts_ruling_search)에는 조세심판원 결정이 다 실려 있지 않습니다. 국세청 쪽에서
+    못 찾은 심판례는 여기서 찾으세요. 국세·지방세(조심YYYY지…)와 옛 국세심판원(국심) 결정이 함께 있고,
+    전문(주문·청구취지·이유(처분개요·청구주장·판단)·관련법령)을 바로 줍니다. 최근 의결 순으로 나옵니다.
+
+    쓰는 법 (셋 중 하나):
+        keyword="업무무관 가지급금"            → 사건명에서 검색 (search_body=True면 본문 전체에서)
+        doc_no="조심 2020중2305"               → 그 결정의 전문 ('조심-2023-서-9465'·'국심2007서3619'도 됨)
+        serial="182286"                        → 검색 결과의 '일련번호'로 전문
+
+    Args:
+        keyword: 검색어. 사건명은 쟁점 요약('…처분의 당부')이라 짧은 핵심어가 잘 걸립니다
+        doc_no: 청구번호
+        serial: 검색 결과의 일련번호
+        search_body: True면 본문 전체 검색 (더 많이 걸리지만 덜 정확)
+        date_from, date_to: 의결일자 범위 YYYYMMDD (선택)
+        display: 검색 결과 수 (기본 20, 최대 100)
+        page: 페이지 번호
+        max_chars, start_char: 전문이 길면 응답의 '잘림' 안내대로 start_char를 넘겨 이어 읽기
+    """
+    if serial:
+        return _safe(_law.get_tax_tribunal, serial, max_chars, start_char)
+    if doc_no:
+        return _safe(_law.get_tax_tribunal_by_no, doc_no, max_chars, start_char)
+    if not (keyword or "").strip():
+        return {"status": "INVALID_INPUT", "오류": "keyword·doc_no·serial 중 하나는 주세요"}
+    return _safe(_law.search_tax_tribunal, keyword, search_body, date_from, date_to, display, page)
 
 
 @mcp.tool()
@@ -444,7 +479,7 @@ if __name__ == "__main__":
 
     log_path = configure_logging()
     install_unknown_tool_hint()
-    logger.info("nts-tax-mcp 확장판 기동 — 기존 9개 + 법제처 11개 도구 (로그: %s)", log_path)
+    logger.info("nts-tax-mcp 확장판 기동 — 기존 9개 + 법제처 12개 도구 (로그: %s)", log_path)
     start_enforcement_refresh()
 
     # mcp.run() 대신 앱을 직접 만들어 접근 토큰 게이트를 한 겹 두른다.

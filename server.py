@@ -33,6 +33,8 @@ from nts_tax_ruling_search import NtsTaxLawClient, NtsParseError, COLLECTIONS
 from olta_tax_ruling_search import (
     OltaTaxLawClient, OltaParseError, ALL_CATEGORY_KEYS, normalize_doc_no,
 )
+from law_go_kr import (LawGoKrClient, LawGoKrError, LawGoKrAuthError, LawGoKrNotFound,
+                       LawGoKrUpstreamError, mask_oc, parse_tax_tribunal_no)
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("nts-tax-mcp")
@@ -50,6 +52,11 @@ mcp = FastMCP(
         "verify_citations로 실존 여부를 일괄 검증할 수 있습니다. 기본통칙·집행기준은 "
         "nts_ruling_search(statute_types=['기본통칙','집행기준'])로 찾고, 집행기준 전문·조문별 목록은 "
         "nts_enforcement_standard로 보세요 — 법제처 admin_rule_search에는 없습니다.\n"
+        "**조세심판원 결정은 국세법령정보시스템에 다 있지 않습니다** — 국세청 쪽에서 못 찾았다고 "
+        "실존하지 않는다고 단정하지 마세요. 문서번호 조회·전문·인용 검증 도구는 조심·국심 번호를 "
+        "국가법령정보센터(법제처) 조세심판원 재결례에서 자동으로 다시 찾습니다. 키워드로 심판례를 "
+        "찾을 때도 nts_ruling_search와 함께 tax_tribunal_decision_search(법제처, 조세심판원 결정 약 14만 건, "
+        "국세·지방세, 전문 포함)를 확인하세요.\n"
         "**검색 결과의 본문은 전문이 아니라 검색어 주변 스니펫입니다** — 심판·심사는 "
         "'결정내용은 붙임과 같습니다.'만 나옵니다. 결정 이유·처분개요·청구주장·사실관계가 "
         "필요하면 검색으로 문서번호를 찾은 뒤 nts_ruling_get_full_text로 전문을 읽으세요. "
@@ -252,7 +259,7 @@ def nts_ruling_search(
                             f"(가능: {list(COLLECTIONS.keys())})"}
         collection_codes = [COLLECTIONS[c] for c in collections]
 
-    return _cap_response(_tool_guard(
+    res = _cap_response(_tool_guard(
         _client.search,
         keyword=keyword,
         collections=collection_codes,
@@ -265,6 +272,12 @@ def nts_ruling_search(
         include_full_text=include_full_text,
         statute_types=statute_types,
     ))
+    # 심판례를 찾는 검색(precedent 포함)이면 법제처 조세심판원 재결례도 보라고 짚어 준다 —
+    # 국세청 수록분만 보고 '없다'고 결론 내리는 일이 있었다 (2026-11-23, 조심 2020중2305)
+    searched_precedent = (collections and "precedent" in collections) or (not collections and not statute_types)
+    if searched_precedent and isinstance(res, dict) and res.get("status") not in ("INVALID_INPUT",):
+        res["_조세심판원_보충"] = _TT_SEARCH_HINT
+    return res
 
 
 @mcp.tool()
@@ -290,8 +303,11 @@ def nts_ruling_get_by_doc_no(doc_no: str) -> dict:
     (심판·심사의 content는 "결정내용은 붙임과 같습니다." 상수).
     결정 이유·처분개요·청구주장·사실관계가 필요하면
     nts_ruling_get_full_text를 사용하세요.
+
+    조세심판원 결정(조심·국심)이 국세법령정보시스템에 없으면 국가법령정보센터(법제처) 조세심판원
+    재결례에서 자동으로 다시 찾습니다 — 응답의 '출처'를 확인하세요.
     """
-    return _tool_guard(_client.get_by_doc_no, doc_no)
+    return _with_tt_lookup(doc_no, _tool_guard(_client.get_by_doc_no, doc_no))
 
 
 @mcp.tool()
@@ -326,8 +342,11 @@ def nts_ruling_get_full_text(doc_no: str, max_chars: int = 30000,
         세액 비교표 같은 표(2행·2열 이상)는 Markdown 표로 복원되어 열 제목과 숫자가
         짝지어 나옵니다. 붙임이 글자 없는 빈 파일이면 검색 결과 본문을 대신 주고
         '비고'로 알립니다.
+        조세심판원 결정(조심·국심)이 국세법령정보시스템에 없거나 붙임이 없으면 국가법령정보센터
+        (법제처) 조세심판원 재결례의 전문(주문·이유·관련법령)을 대신 돌려줍니다 — '출처' 필드 참고.
     """
-    return _tool_guard(_client.get_full_text, doc_no, max_chars, start_char)
+    res = _tool_guard(_client.get_full_text, doc_no, max_chars, start_char)
+    return _with_tt_full_text(doc_no, res, max_chars, start_char)
 
 
 _ENFORCEMENT_CAVEAT = (
@@ -526,7 +545,10 @@ def nts_and_olta_precedent_search(
             "duplicates_removed": duplicates_removed,
         }
 
-    return _cap_response(_tool_guard(_impl))
+    res = _cap_response(_tool_guard(_impl))
+    if isinstance(res, dict) and res.get("status") not in ("INVALID_INPUT",):
+        res["_조세심판원_보충"] = _TT_SEARCH_HINT
+    return res
 
 
 @mcp.tool()
@@ -592,6 +614,87 @@ def olta_get_detail(category: str, doc_id: str) -> dict:
 # ---------------------------------------------------------------------------
 # 인용 검증 — 문서번호 실존 확인 (인용 환각 방지)
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 조세심판원 결정 보충 조회 — 국가법령정보센터(법제처) 조세심판원 재결례
+#
+# 국세법령정보시스템에는 조세심판원 결정이 다 실려 있지 않다 (2026-11-23: 조심 2020중2305가 국세청
+# 문서번호 조회·검색 모두 0건이라 클라이언트가 '실존 미확인'으로 근거에서 뺐는데, 법제처에는 전문이 있었다).
+# 국세청 쪽에서 못 찾은 조심·국심 번호는 법제처에서 한 번 더 찾는다. 머리말(조심·국심)이 있는 번호만
+# 대상으로 한다 — '2022누45199' 같은 판결 번호도 형식이 비슷하기 때문.
+# ---------------------------------------------------------------------------
+_tt = LawGoKrClient()
+TT_SOURCE = "국가법령정보센터(law.go.kr) 조세심판원 재결례"
+_TT_SEARCH_HINT = ("조세심판원 결정은 국세법령정보시스템에 다 실려 있지 않습니다 — 심판례를 찾는 중이면 "
+                   "tax_tribunal_decision_search(keyword)로 국가법령정보센터(조세심판원 결정 약 14만 건)도 확인하세요.")
+
+
+def _is_tt_no(doc_no) -> bool:
+    p = parse_tax_tribunal_no(doc_no)
+    return bool(p and p[0])
+
+
+def _tt_find(doc_no):
+    """(행 목록, 오류문구). 오류면 행 목록은 None — 부존재와 구분한다."""
+    try:
+        return _tt.find_tax_tribunal(doc_no), ""
+    except LawGoKrAuthError as e:
+        return None, f"법제처 인증 실패: {mask_oc(e)}"
+    except (LawGoKrError, LawGoKrUpstreamError, requests.exceptions.RequestException) as e:
+        logger.warning("조세심판원 재결례 조회 실패: %s", mask_oc(e))
+        return None, mask_oc(f"{type(e).__name__}: {e}")
+
+
+_NTS_MISS = ("NOT_FOUND", "UPSTREAM_ERROR", "PARSE_ERROR")
+# 국세청에서 못 찾았어도 법제처 확인이 실패했으면 NOT_FOUND('부존재 판단 가능')로 내보내면 안 된다
+_TT_NOT_ABSENT = {"status": "UPSTREAM_ERROR"}
+
+
+def _nts_missed(res) -> bool:
+    return isinstance(res, dict) and (res.get("status") in _NTS_MISS or res.get("found") is False)
+
+
+def _with_tt_lookup(doc_no: str, res):
+    if not (_is_tt_no(doc_no) and _nts_missed(res)):
+        return res
+    rows, err = _tt_find(doc_no)
+    if rows:
+        return {
+            "status": "OK", "found": True, "출처": TT_SOURCE, "items": rows,
+            "안내": ("국세법령정보시스템에는 없고 국가법령정보센터에 있는 조세심판원 결정입니다. 전문은 "
+                   "nts_ruling_get_full_text(doc_no) 또는 tax_tribunal_decision_search(serial=일련번호)로 읽으세요."),
+            "국세법령정보시스템": res.get("status") or "NOT_FOUND",
+        }
+    res = dict(res)
+    if err:
+        res["국가법령정보센터_확인"] = f"조회 실패 — {err}"
+        res["_guidance"] = "국가법령정보센터 확인에 실패했으므로 부존재로 단정하지 마세요."
+        res.update(_TT_NOT_ABSENT)
+    else:
+        res["국가법령정보센터_확인"] = "없음 (조세심판원 재결례에도 같은 청구번호 없음)"
+    return res
+
+
+def _with_tt_full_text(doc_no: str, res, max_chars: int, start_char: int):
+    if not (_is_tt_no(doc_no) and isinstance(res, dict) and res.get("status") in _NTS_MISS):
+        return res
+    try:
+        out = _tt.get_tax_tribunal_by_no(doc_no, max_chars, start_char)
+    except LawGoKrNotFound:
+        res = dict(res)
+        res["국가법령정보센터_확인"] = "없음 (조세심판원 재결례에도 같은 청구번호 없음)"
+        return res
+    except (LawGoKrError, LawGoKrUpstreamError, requests.exceptions.RequestException) as e:
+        logger.warning("조세심판원 재결례 전문 조회 실패: %s", mask_oc(e))
+        res = dict(res)
+        res["국가법령정보센터_확인"] = mask_oc(f"조회 실패 — {type(e).__name__}: {e}")
+        res["_guidance"] = "국가법령정보센터 확인에 실패했으므로 부존재로 단정하지 마세요."
+        res.update(_TT_NOT_ABSENT)
+        return res
+    return {"status": "OK", **out,
+            "비고": (f"국세법령정보시스템 결과가 {res.get('status')}여서 국가법령정보센터 조세심판원 재결례 "
+                   f"전문으로 대신했습니다.")}
+
 
 # 지방세 계열임이 표기상 분명한 문서번호 — 이 경우 지방세 시스템을 먼저 확인한다.
 # 조심YYYY지NNNN / 감심YYYY-NNN(감심 제YYYY-N호 표기 포함) / 헌재 사건번호
@@ -681,6 +784,7 @@ def _verify_one_citation(raw: str, search_local_tax: bool) -> dict:
 
     candidates = []
     local_first = bool(_LOCAL_TAX_DOC_RE.match(norm))
+    tt_err = ""
     try:
         if not local_first:
             nts_cands = _collect_nts_candidates(raw)
@@ -690,6 +794,12 @@ def _verify_one_citation(raw: str, search_local_tax: bool) -> dict:
                               "일치방식": how, "문서": matched})
                 return entry
             candidates += [c for c, _ in nts_cands]
+        if _is_tt_no(raw):  # 국세청에 없는 조세심판원 결정 — 법제처 재결례 (국세·지방세 모두 수록)
+            rows, tt_err = _tt_find(raw)
+            if rows:
+                entry.update({"판정": "확인", "출처": TT_SOURCE, "일치방식": "정확",
+                              "문서": rows[0]})
+                return entry
         if search_local_tax or local_first:
             olta_cands = _collect_olta_candidates(raw)
             matched, how = _match_citation(norm, olta_cands)
@@ -711,6 +821,10 @@ def _verify_one_citation(raw: str, search_local_tax: bool) -> dict:
                       "비고": "원천 접근 실패 — 존재하지 않는다는 뜻이 아님"})
         return entry
 
+    if tt_err:  # 다른 원천엔 없었지만 법제처 확인이 실패 — 없다고 단정할 수 없다
+        entry.update({"판정": "판단불가", "오류": tt_err,
+                      "비고": "국가법령정보센터 조세심판원 재결례 확인 실패 — 존재하지 않는다는 뜻이 아님"})
+        return entry
     entry["판정"] = "미확인"
     if candidates:
         seen, similar = set(), []
@@ -729,7 +843,8 @@ def verify_citations(doc_nos: list, search_local_tax: bool = True) -> dict:
     답변·의견서 초안에 인용한 예규·심판례·판례 번호가 실재하는지 확인하는
     인용 환각 방지 도구입니다. 각 번호를 원천 시스템(국세법령정보시스템,
     지방세법령정보시스템)에서 검색해 정규화 비교(띄어쓰기·하이픈 차이 흡수)로
-    실존 여부를 판정합니다.
+    실존 여부를 판정합니다. 조세심판원 결정(조심·국심)은 국세법령정보시스템에 없는 것이
+    있어 국가법령정보센터(법제처) 조세심판원 재결례도 확인합니다.
 
     Args:
         doc_nos: 검증할 문서번호 목록 (호출당 최대 10건). 예:

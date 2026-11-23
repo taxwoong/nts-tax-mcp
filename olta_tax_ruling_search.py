@@ -12,11 +12,13 @@ olta_tax_ruling_search.py
 
 import logging
 import re
+import ssl
 import time
 from typing import Optional
 
 import requests
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
 
 logger = logging.getLogger("olta_tax_ruling_search")
 if not logger.handlers:
@@ -24,6 +26,55 @@ if not logger.handlers:
     handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s %(name)s: %(message)s"))
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+
+# ── 만료 인증서 대비 ─────────────────────────────────────────────────────────────
+# 2026-11-23 olta.re.kr 인증서가 만료돼(notAfter 2026-11-22 23:59:59 GMT) 지방세 도구와 verify_citations가
+# 전부 SSLError로 실패했다. 공공기관 사이트는 갱신이 하루이틀 늦는 일이 있어, '만료' 오류일 때만 유효기간 검사를
+# 빼고 한 번 더 시도한다. 호스트명·발급 체인 검증은 그대로다(실측: wrong.host·self-signed는 계속 거부).
+# 읽기 전용 공개 자료 조회이고 자격증명을 보내지 않는다. 국세청 클라이언트도 같은 세션을 쓴다.
+_X509_V_FLAG_NO_CHECK_TIME = 0x200000
+_expired_warned_at = {}
+
+
+class _NoTimeCheckAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        ctx = ssl.create_default_context()
+        ctx.verify_flags |= _X509_V_FLAG_NO_CHECK_TIME
+        kwargs["ssl_context"] = ctx
+        return super().init_poolmanager(*args, **kwargs)
+
+
+class ExpiredCertFallbackAdapter(HTTPAdapter):
+    """평소엔 보통 검증. 'certificate has expired'로 실패할 때만 유효기간 검사를 뺀 연결로 다시 보낸다."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._relaxed = _NoTimeCheckAdapter()
+
+    def send(self, request, **kwargs):
+        try:
+            return super().send(request, **kwargs)
+        except requests.exceptions.SSLError as e:
+            if kwargs.get("verify") is False or "certificate has expired" not in str(e):
+                raise
+            host = requests.utils.urlparse(request.url).hostname
+            now = time.time()
+            if now - _expired_warned_at.get(host, 0) > 3600:  # 시간당 한 번만 남긴다
+                _expired_warned_at[host] = now
+                logging.getLogger("olta_tax_ruling_search").warning(
+                    "%s 인증서가 만료됨 — 유효기간 검사만 빼고 접속합니다(호스트명·체인 검증은 유지)", host)
+            return self._relaxed.send(request, **kwargs)
+
+    def close(self):
+        super().close()
+        self._relaxed.close()
+
+
+def new_session() -> requests.Session:
+    s = requests.Session()
+    s.mount("https://", ExpiredCertFallbackAdapter())
+    return s
+
 
 BASE_URL = "https://olta.re.kr"
 SEARCH_ENTRY_URL = f"{BASE_URL}/explainInfo/decisionList.do?menuNo=90010100&upperMenuId=90010000"
@@ -107,7 +158,7 @@ class OltaTaxLawClient:
         cache_ttl: int = DEFAULT_CACHE_TTL,
         min_request_interval: float = DEFAULT_MIN_INTERVAL,
     ):
-        self.session = requests.Session()
+        self.session = new_session()
         self.session.headers.update({"User-Agent": USER_AGENT})
         self.verify_ssl = verify_ssl
         self.timeout = timeout
@@ -144,7 +195,7 @@ class OltaTaxLawClient:
 
     def _bootstrap(self, force: bool = False):
         if force:
-            self.session = requests.Session()
+            self.session = new_session()
             self.session.headers.update({"User-Agent": USER_AGENT})
             self._bootstrapped = False
 

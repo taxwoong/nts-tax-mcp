@@ -234,6 +234,25 @@ class LawGoKrUpstreamError(Exception):
     무관하므로 UPSTREAM_ERROR로 분류된다. LawGoKrError를 상속하지 않는다 (상속하면 INVALID_INPUT으로 분류됨)."""
 
 
+# 조세심판원 청구번호: '조심 2020중2305' · '조심2020중2305' · '조심-2023-서-9465' · '국심2007서3619' ·
+# 머리말 없이 '2020중2305'. 지역 기호는 한두 글자(서·중·부·광·전·지·경 등), 번호는 앞자리 0이 붙기도 한다
+# ('조심 2024지0063').
+_TT_NO_RE = re.compile(r"^\s*(조심|국심)?\s*[-\s]?\s*(\d{4})\s*[-\s]?\s*([가-힣]{1,2})\s*[-\s]?\s*(\d{1,5})\s*$")
+
+
+def parse_tax_tribunal_no(doc_no):
+    """조세심판원 청구번호면 (머리말 '조심'/'국심'/'', 연도, 지역기호, 번호) — 아니면 None."""
+    m = _TT_NO_RE.match(str(doc_no or ""))
+    if not m:
+        return None
+    return (m.group(1) or "", m.group(2), m.group(3), m.group(4))
+
+
+def _dotted_date(s: str) -> str:
+    s = (s or "").strip()
+    return f"{s[:4]}.{s[4:6]}.{s[6:8]}" if re.fullmatch(r"\d{8}", s) else s
+
+
 def _strip_cdata(s: str) -> str:
     s = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", s, flags=re.S)
     return html.unescape(s).strip()
@@ -253,12 +272,20 @@ def _get(endpoint: str, **params) -> str:
     now = time.time()
     if hit and hit[0] > now:
         return hit[1]
-    try:
-        r = requests.get(f"{BASE}/{endpoint}", params=p, timeout=TIMEOUT,
-                         headers={"User-Agent": "nts-tax-mcp/1.0"})
-        r.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        raise _masked_request_error(e) from None   # 예외 문자열의 요청 URL에 OC가 들어 있다
+    # 연결이 응답 없이 끊기는 일이 가끔 있다 (2026-11-23 실측: RemoteDisconnected) — 연결 오류만 한 번 더.
+    # 읽기 시간 초과는 다시 해도 20초를 또 기다리게 되므로 재시도하지 않는다
+    for attempt in (1, 2):
+        try:
+            r = requests.get(f"{BASE}/{endpoint}", params=p, timeout=TIMEOUT,
+                             headers={"User-Agent": "nts-tax-mcp/1.0"})
+            r.raise_for_status()
+            break
+        except requests.exceptions.ConnectionError as e:
+            if attempt == 1 and not isinstance(e, requests.exceptions.ConnectTimeout):
+                continue
+            raise _masked_request_error(e) from None
+        except requests.exceptions.RequestException as e:
+            raise _masked_request_error(e) from None   # 예외 문자열의 요청 URL에 OC가 들어 있다
     text = r.text
     if "인증" in text[:500] and "실패" in text[:500]:
         raise LawGoKrAuthError("law.go.kr 인증 실패 — OC 또는 IP 등록 확인 필요 (open.law.go.kr에서 현재 서버 IP 등록)")
@@ -380,6 +407,105 @@ class LawGoKrClient:
                             f"이어 읽으려면 start_char={end}로 다시 조회 "
                             f"(또는 max_chars를 {total} 이상으로 지정)")
         return d
+
+    # ---------- 조세심판원 재결례 (법제처 특별행정심판재결례 target=ttSpecialDecc) ----------
+    # 국세법령정보시스템에는 조세심판원 결정이 다 실려 있지 않다 (2026-11-23 실측: 조심 2020중2305는
+    # 국세청 문서번호 조회·검색 모두 0건, 법제처에는 전문이 있음). 법제처 ttSpecialDecc는 조세심판원·
+    # 옛 국세심판원(국심) 결정 141,627건이고 국세·지방세(조심YYYY지)가 함께 있으며, 이유(처분개요·청구주장·
+    # 판단)까지 XML 본문으로 준다 — 국세청 쪽 심판례 전문은 붙임 HWP에만 있다. 갱신도 빠르다
+    # (2026.11.12 의결분이 11.23에 반영). 검색어는 '2020중2305'처럼 붙여 써야 걸린다('2020-중-2305'는 0건).
+    def search_tax_tribunal(self, keyword: str, search_body: bool = False,
+                            date_from: str = "", date_to: str = "", display: int = 20, page: int = 1):
+        """조세심판원 재결례 검색. search_body=False면 사건명(+청구번호), True면 본문 전체에서 찾는다.
+        date_from/date_to: 의결일자 YYYYMMDD 범위. 최근 의결 순으로 준다."""
+        params = dict(target="ttSpecialDecc", query=keyword, display=min(max(int(display), 1), 100),
+                      page=page, search=2 if search_body else 1, sort="ddes")
+        if date_from or date_to:
+            # 의결일자 범위는 rslYd (2026-11-23 실측: edYd·date는 무시되고 전체가 나옴)
+            params["rslYd"] = f"{date_from or '19000101'}~{date_to or '20991231'}"
+        xml = _get("lawSearch.do", **params)
+        rows = [self._tt_row(it) for it in _parse_items(xml, "decc")]
+        total = re.search(r"<totalCnt>(\d+)</totalCnt>", xml)
+        out = {"total": int(total.group(1)) if total else len(rows),
+               "검색범위": "본문" if search_body else "사건명·청구번호", "decisions": rows}
+        if not rows:
+            out["status"] = "NOT_FOUND"
+        return out
+
+    @staticmethod
+    def _tt_row(it: dict) -> dict:
+        return {
+            "청구번호": it.get("청구번호", ""),
+            "사건명": it.get("사건명", ""),
+            "의결일자": it.get("의결일자", ""),
+            "재결청": it.get("재결청", ""),
+            "일련번호": it.get("특별행정심판재결례일련번호", ""),
+            "데이터기준일시": it.get("데이터기준일시", ""),
+        }
+
+    def find_tax_tribunal(self, doc_no: str) -> list:
+        """청구번호(조심 2020중2305 등 여러 표기)와 정확히 같은 재결례 행 목록. 번호 형식이 아니면 []."""
+        parsed = parse_tax_tribunal_no(doc_no)
+        if not parsed:
+            return []
+        prefix, year, region, num = parsed
+        seen, hits = set(), []
+        for n in dict.fromkeys((num, num.zfill(4))):
+            xml = _get("lawSearch.do", target="ttSpecialDecc", query=f"{year}{region}{n}", display=20)
+            for it in _parse_items(xml, "decc"):
+                row = self._tt_row(it)
+                got = parse_tax_tribunal_no(row["청구번호"])
+                if not got or row["일련번호"] in seen:
+                    continue
+                g_prefix, g_year, g_region, g_num = got
+                if (g_year, g_region, int(g_num)) == (year, region, int(num)) and (not prefix or prefix == g_prefix):
+                    seen.add(row["일련번호"])
+                    hits.append(row)
+            if hits:
+                break
+        return hits
+
+    def get_tax_tribunal(self, serial: str, max_chars: int = 30000, start_char: int = 0) -> dict:
+        """재결례 전문 — 일련번호로. 주문·청구취지·이유·관련법령을 이어 붙인 '전문'을 max_chars씩 준다."""
+        xml = _get("lawService.do", target="ttSpecialDecc", ID=serial)
+        def tag(name):
+            m = re.search(rf"<{name}>(.*?)</{name}>", xml, re.S)
+            return _strip_tags(_strip_cdata(m.group(1))) if m else ""
+        d = {k: tag(k) for k in ("사건명", "의결일자", "재결청", "세목", "재결요지", "따른결정", "참조결정")}
+        if not d["사건명"] and not tag("이유"):
+            raise LawGoKrNotFound(f"조세심판원 재결례 본문 없음 (일련번호 {serial}) — 응답 앞부분: {xml[:200]}")
+        # 상세 응답은 청구번호가 빈칸으로 온다(2026-11-23 실측) — 호출부가 검색 행의 청구번호를 덧붙인다
+        d["일련번호"] = str(serial)
+        d["의결일자"] = _dotted_date(d["의결일자"])
+        parts = []
+        for name in ("주문", "청구취지", "이유", "관련법령"):
+            text = tag(name)
+            if text:
+                parts.append(f"[{name}]\n{text}")
+        body = "\n\n".join(parts)
+        total = len(body)
+        end = min(start_char + max_chars, total)
+        d["전문"] = body[start_char:end]
+        d["전문자수"] = total
+        if end < total or start_char:
+            d["잘림"] = (f"전문 {total}자 중 {start_char}~{end}자만 표시됨 — 이어 읽으려면 start_char={end}로 "
+                       f"다시 조회 (또는 max_chars를 {total} 이상으로 지정)")
+        d["출처"] = "국가법령정보센터(law.go.kr) 조세심판원 재결례"
+        return {k: v for k, v in d.items() if v not in ("", None)}
+
+    def get_tax_tribunal_by_no(self, doc_no: str, max_chars: int = 30000, start_char: int = 0) -> dict:
+        """청구번호로 재결례 전문. 없으면 LawGoKrNotFound, 번호 형식이 아니면 LawGoKrError."""
+        if not parse_tax_tribunal_no(doc_no):
+            raise LawGoKrError(f"조세심판원 청구번호 형식이 아님: '{doc_no}' — 예: '조심 2020중2305', "
+                               f"'조심-2023-서-9465', '국심2007서3619'")
+        hits = self.find_tax_tribunal(doc_no)
+        if not hits:
+            raise LawGoKrNotFound(f"국가법령정보센터 조세심판원 재결례에 '{doc_no}' 없음")
+        out = self.get_tax_tribunal(hits[0]["일련번호"], max_chars, start_char)
+        out = {"청구번호": hits[0]["청구번호"], **out}
+        if len(hits) > 1:
+            out["같은번호_다른결정"] = hits[1:]
+        return out
 
     # ---------- 법령해석례 (법제처) ----------
     def search_interpretations(self, keyword: str, display: int = 10, page: int = 1):
