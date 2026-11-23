@@ -8,9 +8,11 @@ server_ext.py — nts-tax-mcp 확장 진입점
 (run_server.bat이 이 파일을 실행한다. server.py는 수정하지 않는다.)
 """
 import difflib
+import json
 import logging
 import logging.handlers
 import os
+import time
 from pathlib import Path
 
 import requests
@@ -92,8 +94,32 @@ def unknown_tool_message(name: str, known: list) -> str:
     return msg
 
 
+# ── 도구 호출 집계 ──────────────────────────────────────────────────────────────
+# 호출마다 'TOOL name=… status=… ms=… chars=…' 한 줄을 남긴다 (usage_stats.py가 모아 센다). 예전 로그에는
+# 'CallToolRequest'만 있어 어떤 도구가 불렸는지 알 수 없었다 (2026-11-24). 검색어·인자는 남기지 않는다 —
+# 거래처명·사건 내용이 들어갈 수 있기 때문이다.
+usage_logger = logging.getLogger("nts-tax-mcp.usage")
+
+
+def result_status_and_size(out) -> tuple:
+    """도구 결과(변환 전 dict든 변환 뒤 content 목록이든)에서 (status, 응답 글자 수). status 키가 없으면 OK."""
+    try:
+        content = out[0] if isinstance(out, tuple) else out
+        if isinstance(content, dict):
+            return str(content.get("status") or "OK"), len(json.dumps(content, ensure_ascii=False, default=str))
+        texts = [getattr(c, "text", "") or "" for c in (content or [])]
+        size = sum(len(t) for t in texts)
+        if texts and texts[0].lstrip().startswith("{"):
+            j = json.loads(texts[0])
+            if isinstance(j, dict):
+                return str(j.get("status") or "OK"), size
+        return "OK", size
+    except Exception:  # noqa: BLE001 — 집계 때문에 응답이 깨지면 안 된다
+        return "OK", 0
+
+
 def install_unknown_tool_hint(server=None) -> None:
-    """FastMCP 도구 관리자의 call_tool을 감싸 없는 도구일 때 안내가 붙은 오류를 낸다."""
+    """FastMCP 도구 관리자의 call_tool을 감싼다 — 없는 도구면 안내가 붙은 오류, 모든 호출은 집계 한 줄."""
     from mcp.server.fastmcp.exceptions import ToolError
 
     tm = (server or mcp)._tool_manager
@@ -102,12 +128,26 @@ def install_unknown_tool_hint(server=None) -> None:
     original = tm.call_tool
 
     async def call_tool(name, arguments, context=None, convert_result=False):
+        t0 = time.perf_counter()
         if tm.get_tool(name) is None:
+            usage_logger.info("TOOL name=%s status=UNKNOWN_TOOL ms=0 chars=0", _safe_name(name))
             raise ToolError(unknown_tool_message(name, [t.name for t in tm.list_tools()]))
-        return await original(name, arguments, context=context, convert_result=convert_result)
+        try:
+            out = await original(name, arguments, context=context, convert_result=convert_result)
+        except Exception:
+            usage_logger.info("TOOL name=%s status=EXCEPTION ms=%d chars=0", name, (time.perf_counter() - t0) * 1000)
+            raise
+        status, size = result_status_and_size(out)
+        usage_logger.info("TOOL name=%s status=%s ms=%d chars=%d", name, status, (time.perf_counter() - t0) * 1000, size)
+        return out
 
     call_tool._with_hint = True
     tm.call_tool = call_tool
+
+
+def _safe_name(name) -> str:
+    """없는 도구 이름은 클라이언트가 지어낸 문자열이다 — 로그 한 줄을 깨지 않게 공백·제어문자를 없애고 자른다."""
+    return "".join(ch for ch in str(name or "")[:60] if ch.isprintable() and not ch.isspace()) or "-"
 
 # status 계약 (server.py와 동일한 규칙):
 #   OK          정상 — 결과 있음

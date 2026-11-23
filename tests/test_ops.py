@@ -113,6 +113,69 @@ def test_hint_installed_on_live_tool_manager():
         assert "이 서버에 없는 도구" not in str(e)
 
 
+def test_result_status_and_size_reads_dict_and_content():
+    from mcp.types import TextContent
+    assert server_ext.result_status_and_size({"status": "NOT_FOUND", "x": 1})[0] == "NOT_FOUND"
+    assert server_ext.result_status_and_size({"precedent": {}})[0] == "OK"  # status 키 없음 = OK
+    blocks = [TextContent(type="text", text='{"status": "UPSTREAM_ERROR", "오류": "t"}')]
+    st, size = server_ext.result_status_and_size((blocks, {"result": {}}))
+    assert st == "UPSTREAM_ERROR" and size == len(blocks[0].text)
+    assert server_ext.result_status_and_size([TextContent(type="text", text="plain")])[0] == "OK"
+    assert server_ext.result_status_and_size(object()) == ("OK", 0)  # 이상한 값이어도 예외 없이
+
+
+def test_every_call_writes_one_usage_line_without_arguments():
+    server_ext.install_unknown_tool_hint()
+    tm = server_ext.mcp._tool_manager
+    seen = []
+
+    class _H(logging.Handler):
+        def emit(self, record):
+            seen.append(record.getMessage())
+
+    h = _H()
+    server_ext.usage_logger.addHandler(h)
+    old_level = server_ext.usage_logger.level
+    server_ext.usage_logger.setLevel(logging.INFO)
+    try:
+        r = asyncio.run(tm.call_tool("tax_tribunal_decision_search", {"keyword": "거래처비밀"}, convert_result=False))
+        assert r["status"] == "INVALID_INPUT" or "decisions" in r or r.get("status")
+        try:
+            asyncio.run(tm.call_tool("olta ruling\nfake", {}))
+        except ToolError:
+            pass
+    finally:
+        server_ext.usage_logger.removeHandler(h)
+        server_ext.usage_logger.setLevel(old_level)
+    assert len(seen) == 2, seen
+    assert seen[0].startswith("TOOL name=tax_tribunal_decision_search status=") and " ms=" in seen[0]
+    assert "거래처비밀" not in seen[0]  # 검색어·인자는 남기지 않는다
+    assert seen[1].startswith("TOOL name=") and "UNKNOWN_TOOL" in seen[1] and " " not in seen[1].split()[1][5:]
+
+
+def test_usage_stats_counts_named_and_unnamed_calls():
+    import usage_stats
+    lines = [
+        "2026-11-23 10:00:00,000 INFO mcp.server.lowlevel.server: Processing request of type CallToolRequest",
+        "2026-11-23 10:00:01,000 INFO mcp.server.lowlevel.server: Processing request of type CallToolRequest",
+        "2026-11-24 08:00:00,000 INFO mcp.server.lowlevel.server: Processing request of type CallToolRequest",
+        "2026-11-24 09:00:00,000 INFO mcp.server.lowlevel.server: Processing request of type CallToolRequest",
+        "2026-11-24 09:00:00,900 INFO nts-tax-mcp.usage: TOOL name=nts_ruling_search status=OK ms=800 chars=4000",
+        "2026-11-24 09:01:00,000 INFO mcp.server.lowlevel.server: Processing request of type CallToolRequest",
+        "2026-11-24 09:01:00,500 INFO nts-tax-mcp.usage: TOOL name=nts_ruling_search status=UPSTREAM_ERROR ms=200 chars=100",
+    ]
+    with tempfile.TemporaryDirectory() as d:
+        Path(d, "server.log.2026-11-23").write_text("\n".join(lines[:2]) + "\n", encoding="utf-8")
+        Path(d, "server.log").write_text("\n".join(lines[2:]) + "\n", encoding="utf-8")
+        r = usage_stats.collect(d)
+        assert r["총호출"] == 5 and r["이름_기록된_호출"] == 2 and r["이름_미기록_호출"] == 3
+        assert r["날짜별"] == {"2026-11-23": 2, "2026-11-24": 3}
+        t = r["도구별"][0]
+        assert t["도구"] == "nts_ruling_search" and t["호출"] == 2 and t["평균_ms"] == 500
+        assert t["결과"] == {"OK": 1, "UPSTREAM_ERROR": 1}
+        assert usage_stats.collect(d, since="2026-11-24")["총호출"] == 3
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_") and callable(v)]
     for t in tests:

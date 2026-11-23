@@ -10,7 +10,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![MCP](https://img.shields.io/badge/MCP-streamable--http-black)
 ![tools](https://img.shields.io/badge/tools-21-brightgreen)
-![status](https://img.shields.io/badge/version-v5.11.0-informational)
+![status](https://img.shields.io/badge/version-v5.11.1-informational)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
 ```bash
@@ -226,6 +226,22 @@ python auth_gate.py revoke 홍길동   # 그 사람 URL만 무효화 (서버 재
 
 ## 문제가 생겼을 때
 
+### 도구 호출 집계 (v5.11.1)
+
+서버는 도구를 호출할 때마다 `logs/server.log`에 한 줄을 남깁니다 — 도구 이름·결과 `status`·걸린 시간·응답 글자 수.
+**검색어와 인자는 남기지 않습니다**(거래처명·사건 내용이 들어갈 수 있어서). `usage_stats.py`가 이 줄을 모아 셉니다.
+
+```bash
+python usage_stats.py                 # 전체 기간: 날짜별 · 도구별(호출·평균 ms·평균 응답 글자·결과) · 결과별
+python usage_stats.py --days 7        # 최근 7일
+python usage_stats.py --since 2026-11-01 --until 2026-11-30 --json
+```
+
+v5.11.1 이전 로그는 도구 이름 없이 호출이 있었다는 것만 남아 있어 날짜별 건수만 `이름 기록 전`으로 따로 셉니다.
+결과별 집계의 `UPSTREAM_ERROR`·`PARSE_ERROR`가 늘면 원천 사이트 장애나 개편 신호입니다.
+claude.ai 커넥터 요청은 모두 Anthropic 서버 주소에서 오므로 IP로는 사람을 가를 수 없습니다 — 사람별 집계는
+[접근 제한](#접근-제한-사무실-인원만-쓰게-하기)의 사람별 토큰을 써야 합니다.
+
 ### 먼저 서버 자체를 점검
 
 Claude 채팅에서 도구가 안 잡히는 문제가 생겼을 때, **서버 자체 문제인지 Claude 쪽 문제인지**를
@@ -282,6 +298,7 @@ nts-tax-mcp/
 ├── hwp_text.py                  # 붙임 HWP 5.0 → 본문 텍스트 변환 (전문 조회용, v5.5)
 ├── auth_gate.py                 # 사람별 URL 토큰 게이트 + 발급·조회·폐기 CLI
 ├── test_mcp_client.py           # 서버 상태 독립 점검 스크립트
+├── usage_stats.py               # 도구 호출 집계 — 날짜별·도구별·결과별 (logs/ 읽기, v5.11.1)
 ├── tests/                       # 파서 회귀 테스트 (v5.4)
 │   ├── refresh_fixtures.py      #   실제 응답을 픽스처로 캡처 (OC 키 자동 마스킹)
 │   ├── test_parsers.py          #   오프라인 파싱 검증 (네트워크 불필요, pytest 호환)
