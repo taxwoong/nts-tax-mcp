@@ -10,7 +10,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![MCP](https://img.shields.io/badge/MCP-streamable--http-black)
 ![tools](https://img.shields.io/badge/tools-21-brightgreen)
-![status](https://img.shields.io/badge/version-v5.11.1-informational)
+![status](https://img.shields.io/badge/version-v5.11.2-informational)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
 ```bash
@@ -468,11 +468,16 @@ nts-tax-mcp/
 
 | 파라미터 | 설명 |
 |---|---|
-| `keyword` | 검색어 (필수) |
-| `court` | `"대법원"` 또는 `"하위법원"` (빈값 = 전체) |
+| `keyword` | 검색어. `2017나2027639`처럼 사건번호만 넣으면 사건번호로 정확히 찾음 (v5.11.2) |
+| `case_no` | 사건번호로 정확히 찾기 (`대법원 2019다236385`·`서울고법 2017나2027639` 표기도 됨, v5.11.2) |
+| `court` | `"대법원"` / `"하위법원"`(하급심 전부) / 개별 법원명(`"서울고등법원"` 등) / 빈값 = 전체. v5.11.1까지는 `"하위법원"`이 늘 0건이었음 |
 | `date_from` / `date_to` | 선고일자 범위 YYYYMMDD |
 | `display` | 결과 수 (기본 10) |
 | `page` | 페이지 번호 |
+
+**법제처 판례 DB에는 하급심 판결이 일부만 선별돼 실립니다.** 사건번호로 찾았는데 없으면 `status=NOT_FOUND`와 함께
+그 번호를 본문에 언급한 판결(대개 상급심 — 원심 판단이 요약돼 있음)을 `이_번호를_언급한_판결`로 주고, 판결이 없다는
+뜻이 아님을 `_guidance`로 알립니다. 하급심 원문 자체는 대법원 '판결서 인터넷열람'(유료) 등에서만 볼 수 있습니다.
 
 ### `court_case_detail` (`server_ext.py`)
 
@@ -696,7 +701,8 @@ v5.8부터 `원문` 앞에 섞이던 조문번호·시행일자·`000000`·`N` �
 ## 변경 이력
 
 버전별 상세 변경 내용은 [CHANGELOG.md](CHANGELOG.md)를 참고하세요.
-최신은 **v5.11** (2026-11-23) — 주제 검색에도 국가법령정보센터 조세심판원 결정을 함께 (`law_tax_tribunal`).
+최신은 **v5.11.2** (2026-11-26) — 판례 검색 '하위법원' 필터 버그 수정 · 사건번호 정확 조회 · 인용 검증에 판결 번호.
+그 전 **v5.11** (2026-11-23) — 주제 검색에도 국가법령정보센터 조세심판원 결정을 함께 (`law_tax_tribunal`).
 그 전 **v5.10** (2026-11-23) — 조세심판원 결정 보충 조회(국가법령정보센터, `tax_tribunal_decision_search`) · 만료 인증서 대비.
 그 전 **v5.9.1** (2026-11-23) — 운영 보강: 로그 회전·시각 기록 · 없는 도구 이름 안내 · 점검 스크립트 인코딩.
 **v5.9** (2026-10-18) — 집행기준 본문(책자 보관소·`nts_enforcement_standard`) · 기본통칙·집행기준 찾기(`statute_types`).

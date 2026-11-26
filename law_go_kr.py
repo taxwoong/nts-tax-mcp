@@ -234,6 +234,35 @@ class LawGoKrUpstreamError(Exception):
     무관하므로 UPSTREAM_ERROR로 분류된다. LawGoKrError를 상속하지 않는다 (상속하면 INVALID_INPUT으로 분류됨)."""
 
 
+# 판결 사건번호: '2017나2027639' · '2013가합63177' · '2019다236385' · '96누1234' (연도 2·4자리, 사건부호 한글 1~3자).
+# 공백·하이픈은 무시한다. 국세청 표기('서울고등법원-2022-누-45199')는 법원명이 붙어 여기 걸리지 않는다
+_CASE_NO_RE = re.compile(r"^(\d{2}|\d{4})([가-힣]{1,3})(\d{1,7})$")
+
+
+def _case_no(text) -> str:
+    t = re.sub(r"[\s\-]", "", str(text or ""))
+    t = re.sub(r"^[가-힣]*(법원|고법|지법|지원)", "", t)  # '대법원 2019다236385'·'서울고법 2017나2027639'
+    return t if _CASE_NO_RE.match(t) else ""
+
+
+normalize_case_no = _case_no  # 다른 모듈용 이름 (판결 사건번호면 공백·하이픈 뺀 번호, 아니면 "")
+
+
+# 법원 구분: 법제처 API는 법원종류를 org 코드(대법원 400201, 하위법원 400202)로, 개별 법원은 curt(법원명)로 받는다.
+# 예전에는 '하위법원'을 curt에 넣어 키워드와 무관하게 늘 0건이었다 (2026-11-26 실측: '주식매수청구권'
+# curt=하위법원 0건 / org=400202 1,218건 / curt=대법원 377건 / org=400201 411건)
+_COURT_ORG = {"대법원": "400201", "하위법원": "400202", "하급심": "400202", "하급법원": "400202", "하급": "400202"}
+
+
+def _court_params(court) -> dict:
+    c = re.sub(r"\s", "", str(court or ""))
+    if not c:
+        return {}
+    if c in _COURT_ORG:
+        return {"org": _COURT_ORG[c]}
+    return {"curt": c}
+
+
 # 조세심판원 청구번호: '조심 2020중2305' · '조심2020중2305' · '조심-2023-서-9465' · '국심2007서3619' ·
 # 머리말 없이 '2020중2305'. 지역 기호는 한두 글자(서·중·부·광·전·지·경 등), 번호는 앞자리 0이 붙기도 한다
 # ('조심 2024지0063').
@@ -346,15 +375,37 @@ def _require_exact_name(rows: list, law_name: str):
 class LawGoKrClient:
     # ---------- 판례 (법제처 제공 대법원·하급심) ----------
     def search_cases(self, keyword: str, court: str = "", date_from: str = "",
-                     date_to: str = "", display: int = 10, page: int = 1):
-        """target=prec 판례 검색. court: '대법원' 또는 '하위법원'(빈값=전체).
-        date_from/date_to: YYYYMMDD (선고일자 범위)."""
+                     date_to: str = "", display: int = 10, page: int = 1, case_no: str = ""):
+        """target=prec 판례 검색. court: '대법원' / '하위법원'(=하급심, 대법원 외 전부) / 개별 법원명
+        ('서울고등법원' 등) / 빈값=전체. date_from/date_to: YYYYMMDD (선고일자 범위).
+        case_no(또는 keyword 자체가 '2017나2027639' 같은 사건번호)면 사건번호로 정확히 찾는다."""
+        no = _case_no(case_no) or _case_no(keyword)
+        if no:
+            return self._find_case_by_no(no)
         params = dict(target="prec", query=keyword, display=display, page=page, search=2)
-        if court:
-            params["curt"] = court
+        params.update(_court_params(court))
         if date_from or date_to:
             params["prncYd"] = f"{date_from or '19450815'}~{date_to or '20991231'}"
-        xml = _get("lawSearch.do", **params)
+        return self._case_rows(_get("lawSearch.do", **params))
+
+    def _find_case_by_no(self, no: str) -> dict:
+        """사건번호 정확 조회(nb). 없으면 그 번호를 본문에 언급한 판결(상급심 등)을 함께 준다 — 법제처 DB에는
+        하급심 판결이 일부만 실려 있어, 없다는 것이 판결이 없다는 뜻은 아니다 (2026-11-26 실측: 2013가합63177·
+        2014나49076·2017나2027639는 없고 상고심 2019다236385 본문에 번호만 나옴)."""
+        out = self._case_rows(_get("lawSearch.do", target="prec", nb=no, display=20))
+        out["사건번호_정확조회"] = no
+        if out["cases"]:
+            return out
+        citing = self._case_rows(_get("lawSearch.do", target="prec", query=no, search=2, display=10))
+        out["이_번호를_언급한_판결"] = citing["cases"]
+        out["_guidance"] = (
+            f"법제처 판례 DB에 사건번호 {no}인 판결이 없습니다. 이 DB에는 하급심 판결이 일부만 선별돼 실리므로 "
+            "판결이 존재하지 않는다는 뜻이 아닙니다. '이_번호를_언급한_판결'(대개 상급심)의 본문에 원심 판단이 "
+            "요약돼 있을 수 있으니 court_case_detail로 읽어 보세요. 세무 사건이면 nts_ruling_get_full_text(사건번호)로 "
+            "국세청 판례도 확인하세요. 하급심 원문 자체는 대법원 '판결서 인터넷열람'(유료) 등에서만 볼 수 있습니다.")
+        return out
+
+    def _case_rows(self, xml: str) -> dict:
         items = _parse_items(xml, "prec")
         total = re.search(r"<totalCnt>(\d+)</totalCnt>", xml)
         cases = []

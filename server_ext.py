@@ -212,22 +212,31 @@ def _with_article_guide(out):
 
 
 @mcp.tool()
-def court_case_search(keyword: str, court: str = "", date_from: str = "",
-                      date_to: str = "", display: int = 10, page: int = 1) -> dict:
-    """법제처(law.go.kr) 판례 검색 — 대법원·하급심 판례를 키워드로 찾는다.
+def court_case_search(keyword: str = "", court: str = "", date_from: str = "",
+                      date_to: str = "", display: int = 10, page: int = 1, case_no: str = "") -> dict:
+    """법제처(law.go.kr) 판례 검색 — 대법원·하급심 판례를 키워드나 사건번호로 찾는다.
 
-    국세청 시스템(nts_ruling_search)의 법원판례와 별개로, 법제처가 제공하는
-    전체 법원 판례 DB를 검색한다. 세무 판례의 상고심 확정 여부 확인에도 사용.
+    국세청 시스템(nts_ruling_search)의 법원판례와 별개로, 법제처가 제공하는 법원 판례 DB를 검색한다.
+    세무 판례의 상고심 확정 여부 확인에도 사용. **이 DB에 하급심 판결은 일부만 선별돼 실린다** —
+    여기 없다고 그 판결이 없는 것은 아니다.
 
     Args:
-        keyword: 검색어 (예: "청산금 양도시기")
-        court: "대법원" 또는 "하위법원" (빈값 = 전체)
+        keyword: 검색어 (예: "청산금 양도시기"). '2017나2027639'처럼 사건번호만 넣으면 사건번호로 정확히 찾는다
+        court: "대법원" / "하위법원"(하급심 전부) / 개별 법원명("서울고등법원", "서울중앙지방법원" 등) / 빈값 = 전체
         date_from: 선고일 시작 YYYYMMDD (선택)
         date_to: 선고일 종료 YYYYMMDD (선택)
         display: 결과 수 (기본 10)
         page: 페이지 번호
+        case_no: 사건번호로 정확히 찾기 (예: "2013가합63177"). 없으면 그 번호를 본문에 언급한 판결
+            (대개 상급심 — 원심 판단이 요약돼 있음)을 '이_번호를_언급한_판결'로 함께 준다
     """
-    return _safe(_law.search_cases, keyword, court, date_from, date_to, display, page)
+    if not (keyword or "").strip() and not (case_no or "").strip():
+        return {"status": "INVALID_INPUT", "오류": "keyword나 case_no 중 하나는 주세요"}
+    out = _safe(_law.search_cases, keyword, court, date_from, date_to, display, page, case_no)
+    if isinstance(out, dict) and out.get("status") == "NOT_FOUND" and "_guidance" not in out:
+        out["_guidance"] = ("법제처 판례 DB에는 하급심 판결이 일부만 실리므로, 0건이 그런 판결이 없다는 뜻은 아닙니다. "
+                            "검색어를 바꾸거나 court·기간 조건을 풀어 보고, 세무 사건이면 nts_ruling_search도 확인하세요.")
+    return out
 
 
 @mcp.tool()

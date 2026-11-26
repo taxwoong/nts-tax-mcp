@@ -35,7 +35,7 @@ from olta_tax_ruling_search import (
     OltaTaxLawClient, OltaParseError, ALL_CATEGORY_KEYS, normalize_doc_no,
 )
 from law_go_kr import (LawGoKrClient, LawGoKrError, LawGoKrAuthError, LawGoKrNotFound,
-                       LawGoKrUpstreamError, mask_oc, parse_tax_tribunal_no)
+                       LawGoKrUpstreamError, mask_oc, parse_tax_tribunal_no, normalize_case_no)
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("nts-tax-mcp")
@@ -715,6 +715,21 @@ def _tt_topic_section(keyword, count, page=1, date_from=None, date_to=None, tax_
     return sec
 
 
+PREC_SOURCE = "국가법령정보센터(law.go.kr) 판례"
+
+
+def _prec_find(case_no: str):
+    """(일치 판결 목록, 오류문구, 그 번호를 언급한 판결 목록). 오류면 일치 목록은 None."""
+    try:
+        r = _tt.search_cases("", case_no=case_no)
+        return r.get("cases") or [], "", r.get("이_번호를_언급한_판결") or []
+    except LawGoKrAuthError as e:
+        return None, f"법제처 인증 실패: {mask_oc(e)}", []
+    except (LawGoKrError, LawGoKrUpstreamError, requests.exceptions.RequestException) as e:
+        logger.warning("법제처 판례 사건번호 조회 실패: %s", mask_oc(e))
+        return None, mask_oc(f"{type(e).__name__}: {e}"), []
+
+
 def _is_tt_no(doc_no) -> bool:
     p = parse_tax_tribunal_no(doc_no)
     return bool(p and p[0])
@@ -886,6 +901,15 @@ def _verify_one_citation(raw: str, search_local_tax: bool) -> dict:
                 entry.update({"판정": "확인", "출처": TT_SOURCE, "일치방식": "정확",
                               "문서": rows[0]})
                 return entry
+        case_no = normalize_case_no(raw)
+        if case_no:  # 법원 사건번호('2019다236385') — 법제처 판례 DB에서 사건번호로 정확 조회
+            found, prec_err, citing = _prec_find(case_no)
+            if found:
+                entry.update({"판정": "확인", "출처": PREC_SOURCE, "일치방식": "정확", "문서": found[0]})
+                return entry
+            tt_err = tt_err or prec_err
+            if citing:
+                entry["이_번호를_언급한_판결"] = citing[:3]
         if search_local_tax or local_first:
             olta_cands = _collect_olta_candidates(raw)
             matched, how = _match_citation(norm, olta_cands)
@@ -909,9 +933,12 @@ def _verify_one_citation(raw: str, search_local_tax: bool) -> dict:
 
     if tt_err:  # 다른 원천엔 없었지만 법제처 확인이 실패 — 없다고 단정할 수 없다
         entry.update({"판정": "판단불가", "오류": tt_err,
-                      "비고": "국가법령정보센터 조세심판원 재결례 확인 실패 — 존재하지 않는다는 뜻이 아님"})
+                      "비고": "국가법령정보센터 확인 실패 — 존재하지 않는다는 뜻이 아님"})
         return entry
     entry["판정"] = "미확인"
+    if normalize_case_no(raw):
+        entry["비고"] = ("법제처 판례 DB에는 하급심 판결이 일부만 실립니다 — 미확인이 판결이 없다는 뜻은 아닙니다. "
+                       "'이_번호를_언급한_판결'(대개 상급심)이나 대법원 판결서 열람으로 확인하세요.")
     if candidates:
         seen, similar = set(), []
         for c in candidates:
@@ -930,7 +957,9 @@ def verify_citations(doc_nos: list, search_local_tax: bool = True) -> dict:
     인용 환각 방지 도구입니다. 각 번호를 원천 시스템(국세법령정보시스템,
     지방세법령정보시스템)에서 검색해 정규화 비교(띄어쓰기·하이픈 차이 흡수)로
     실존 여부를 판정합니다. 조세심판원 결정(조심·국심)은 국세법령정보시스템에 없는 것이
-    있어 국가법령정보센터(법제처) 조세심판원 재결례도 확인합니다.
+    있어 국가법령정보센터(법제처) 조세심판원 재결례도 확인합니다. 법원 사건번호('2019다236385',
+    '2017나2027639')는 법제처 판례 DB에서 사건번호로 정확히 찾습니다 — 하급심은 일부만 실려 있어
+    미확인이어도 판결이 없다는 뜻은 아닙니다.
 
     Args:
         doc_nos: 검증할 문서번호 목록 (호출당 최대 10건). 예:

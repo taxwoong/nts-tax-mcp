@@ -372,7 +372,7 @@ NTS/OLTA의 법원판례와 **별도 DB**라 문서번호 체계도 다르고 �
 
 | 도구 | target | 주요 파라미터 |
 |---|---|---|
-| `court_case_search` | prec | keyword, court, date_from/to, display, page |
+| `court_case_search` | prec | keyword, case_no(사건번호 정확 조회 `nb`, v5.11.2), court(`대법원`·`하위법원`→`org` 400201·400202, 개별 법원명→`curt` — v5.11.1까지 '하위법원'을 `curt`로 넘겨 늘 0건), date_from/to, display, page. 하급심은 일부만 수록 |
 | `court_case_detail` | prec | case_serial, max_chars |
 | `tax_tribunal_decision_search` | ttSpecialDecc | keyword(search_body=False 사건명·청구번호 / True 본문), doc_no, serial, date_from/to(`rslYd`), display, page, max_chars, start_char — 의결일 최신순(`sort=ddes`) (v5.10) |
 | `law_interpretation_search` | expc | keyword, display, serial |
